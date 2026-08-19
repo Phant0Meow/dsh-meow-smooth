@@ -165,6 +165,41 @@ node_modules junction 镜像，当前构建不再需要。）
 - **VAPID keys**：首次启动自动生成，持久化在 `$DSH_HOME/.meow-smooth/`。
   长任务完成阈值 `longTaskToolCalls`（默认 7）可在 patch config 里调整。
 
+### 手机访问加速（压缩代理，可选）
+
+dsh 的 history 等 unary RPC 响应是**不压缩的 JSON**（大会话窗口可达 1-8MB，
+手机经蜂窝/tailscale 下载很慢）。meow-smooth 内置压缩代理（**零 dsh 本体
+改动**）：插件在 dsh 进程内起一个本地反向代理，把 `POST /api/*` 的 JSON
+响应按 `Accept-Encoding` 加 gzip（实测压缩 70-90%）；SSE 长连接、静态资源、
+WebSocket 原样透传——不破坏流式，Host/Origin 头原样转发（信任围栏不受影响）。
+
+开启步骤：
+
+1. profile 的 `cordis.patch.yml` 里 meow-smooth 条目加：
+
+   ```yaml
+   - insert:
+       - id: meow-smooth
+         name: 'meow-smooth'
+         config:
+           enabled: true
+           proxy:
+             enabled: true
+             port: 8444   # 代理监听端口；targetPort 自动从 dsh --port 解析
+   ```
+
+   重启 dsh 生效（代理随插件生命周期启停，热重载/卸载自动关闭）。
+2. 把手机访问入口（反代）指向代理端口（示例：Tailscale Serve）：
+
+   ```sh
+   tailscale serve --bg --https=8443 http://127.0.0.1:8444
+   ```
+
+   手机用 `https://<你的 MagicDNS 域名>:8443` 访问即自动加速。
+
+注意：多实例时每个实例用不同代理端口（如 3080 → 8444、3081 → 8445）；
+默认关闭（不配置 `proxy.enabled` 就不启动），不会干扰现有部署。
+
 ## 免责声明
 
 本插件是喵版定制（dsh-meow 生态），与官方上游无关联。

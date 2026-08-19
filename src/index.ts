@@ -32,6 +32,7 @@ interface PendingApprovalView {
 }
 
 import { installNotifyHost } from './notify-host.ts'
+import { startCompressProxy, resolveTargetPort } from './compress-proxy.ts'
 
 /** 插件名（loader 诊断用；与 cordis.patch.yml 的 name 一致）。 */
 export const name = 'meow-smooth'
@@ -52,6 +53,14 @@ export interface Config extends Record<string, any> {
   vapidPublicKey?: string
   /** Web Push VAPID 私钥（不配则自动生成并持久化）。 */
   vapidPrivateKey?: string
+  /** 压缩代理（手机访问加速，默认关闭）：port=代理监听端口（默认 8444）；
+   *  targetPort 自动从 dsh --port 解析。开启后把 tailscale serve 等反代
+   *  指向 127.0.0.1:<port>。零 dsh 本体改动，见 src/compress-proxy.ts。 */
+  proxy?: {
+    enabled?: boolean
+    port?: number
+    targetPort?: number
+  }
 }
 
 /** Host loader entry for the browser-only fold plugin. */
@@ -63,6 +72,24 @@ export function apply(ctx: any, config?: Config): void {
   const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : undefined
   // 通知模块（需求 15）：长任务完成队列 + PWA 资源 + Web Push 推送器。
   const notify = installNotifyHost(ctx, config)
+  // 压缩代理（config.proxy.enabled，默认关闭）：手机访问加速，零本体改动。
+  // targetPort 自动从 dsh --port 解析；随插件 fiber 销毁（热重载/卸载即停）。
+  const proxyCfg = config?.proxy
+  if (proxyCfg?.enabled === true) {
+    const server = startCompressProxy({
+      port: proxyCfg.port ?? 8444,
+      targetPort: proxyCfg.targetPort ?? resolveTargetPort(),
+    })
+    if (typeof ctx.effect === 'function') {
+      // cordis effect 语义：execute 立即执行，返回的 disposer 在 fiber 卸载时
+      // 调用（热重载/卸载即停）。把关闭逻辑放进返回的 disposer。
+      ctx.effect(() => () => {
+        server.close()
+        // Node 18.2+：强制断开残留连接，避免热重载时代理端口滞留。
+        if (typeof server.closeAllConnections === 'function') server.closeAllConnections()
+      }, 'meow-smooth: compress proxy')
+    }
+  }
   const pending = new Map<string, PendingApprovalView>()
   /** 待消费的 reason 观察记录：key = `sessionId|callId`。approval/request
    *  在 approval/asked append 后的微任务 dispatch，asked 事件先到、登记
