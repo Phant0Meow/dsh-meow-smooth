@@ -1,0 +1,168 @@
+# meow-smooth 喵丝滑
+
+dsh（DeepSeek Harness）前端行为增强插件，**零 dsh 本体改动**，纯 client 端自包含。
+
+## 功能
+
+1. **输入框失焦折叠**：composer 输入框失去焦点时，自适应高度折叠回 1 行；
+   再次聚焦/点击输入框区域展开回草稿实际高度，滚动位置保留。长草稿不再
+   常年占着半个屏幕。
+2. **手机端模型选择器折叠宽度**：视口 < 1024px 时模型名压到 96px 宽并
+   省略号截断（隐藏 effort 文字），不再把输入框左侧按钮挤掉。
+3. **手机端禁止页面缩放**：viewport meta 加 `maximum-scale=1` +
+   `user-scalable=no`，CSS `touch-action: manipulation` 防双击缩放，
+   iOS gesture 事件拦截捏合。
+4. **手机端输入框换行**：触屏（粗指针）设备上 Enter 不再发送、改为插入
+   换行（键盘回车键显示"换行"）；Shift/Ctrl/Alt/Meta+Enter 与输入法选词
+   不受影响。桌面键盘保持 Enter 发送。
+5. **窄屏选中会话收起侧边栏**：视口宽度 < 1024px（dsh 布局契约
+   `SIDEBAR_AUTO_COLLAPSE`，手机/窄窗口）时，切换 Session 后侧边栏自动收成
+   56px rail，把屏幕还给对话内容。
+6. **手机端点击侧边栏外自动收起**：窄屏侧边栏展开时，点击右侧空间（边栏
+   以外区域）自动收起。用 click（pointerup 之后）判定——拖拽滚动不产生
+   click，被点元素的动作先于收起重排完成，不会误点。
+7. **手机端 Session log 按钮缩窄**：隐藏按钮文字只留下载图标，并去掉
+   `min-width: 111px` 与宽 padding，缩成紧凑图标按钮。
+8. **手机端模式选择栏缩窄**：agent preset label 只留 icon，腾空间给
+   Session name；**点击图标展开显示模式名**，点击别处自动收回。
+9. **打字时隐藏 header、悬浮 Session name 条**：输入法激活（键盘占屏
+   ≥20% 物理屏高，screen.height 差值判定，Android 页面 resize 也不受影响）
+   → 隐藏原生 header，body 层 fixed 悬浮条显示当前会话名（z-index 9999，
+   offsetTop 补偿 iOS 平移）；键盘收起销毁恢复。会话切换自动聚焦弹出的
+   键盘会被抑制（blur 收起，不显示条）。
+10. **手机端后台任务数 / 子代理按钮缩窄**：header 动作区的两个下拉按钮
+    只留状态小图标（隐藏计数文字与右侧下拉箭头），空闲（无运行中任务/
+    子代理）时中性灰点兜底；点小图标即打开下拉列表。
+11. **手机端 header 横向滑动**：Session name 完整显示、绝不截断，其余
+    动作按钮按上面优化后的窄形态依次排在 name 后面；内容超宽时 header
+    行可左右滑动看到更多内容（滚动条隐藏）。
+
+12. **手机端禁用橡皮筋回弹**：页面整体下拉回弹被禁用（app 化观感）——
+    CSS `overscroll-behavior: none`（html/body 与 root 全树，含安卓下拉
+    刷新）+ JS touchmove 边界兜底（旧 iOS/安卓）；可滚动容器内正常滑动
+    不受影响，到边界即拦。
+13. **手机端审批/提问提醒横幅**：AI 工作中的权限申请与提问在手机端可能
+    因窗口未开/未在目标会话而不显示。host 端审计投影 + 只读路由
+    `GET /plugins/meow-smooth/pending` 暴露全部未决审批细节（toolName/
+    reason/命令/失效标记，含服务重启后从审计日志恢复的孤儿项）；client
+    3s 轮询，提问/计划审状态由隐形 dock 经 useSessions 汇报（官方帧
+    驱动，跨会话）。合并后窄屏顶部显示 fixed 横幅：点"查看"跳转目标
+    会话（`ctx.sessions.open`，列表未同步时自动重试），官方面板接管则
+    隐藏，未接管（帧丢失/孤儿审批）则展开详情并提示可能已失效。
+14. **失焦折叠稳定性修复**：折叠判定对比实测 1 行高（line-height +
+    padding）而非滚动窗当前高度——旧逻辑把"无溢出"误判为"只有 1 行"，
+    导致多行草稿（≤14 行内）永不折叠；折叠高度用 JS 实测写入 CSS 变量
+    `--meow-smooth-one-line`（30px 兜底），任何主题都精确等于默认 1 行高；
+    触屏点卡片外 click 兜底折叠（iOS/Android 点空白可能不移焦，
+    focusout 不触发）。
+15. **通知（权限申请 / 提问 / 长任务完成）**：三处事件在页面不可见时弹
+    系统通知（桌面/Android 页面内 Notification API；iOS PWA 与浏览器
+    关闭场景由 Web Push 兜底）：
+    - 权限申请：审批 pending → "有权限申请待处理"
+    - 提问：`ask_user_question` 工具调用（question 无审计事件，按工具名
+      检测）→ "有提问待回答"
+    - 长任务完成：turn 内工具调用 ≥ `longTaskToolCalls`（默认 7，patch
+      可配）的 turn 结束时 → "任务完成"
+    点击通知 → 聚焦页面 + 跳转目标会话。PWA（manifest/SW/图标）由
+    meow-smooth 提供；VAPID keys 与订阅持久化在 `$DSH_HOME/.meow-smooth/`。
+    **HTTPS 前置**：Web Push / SW 要求 secure context——手机端用
+    `https://<你的 MagicDNS 域名>:<serve 端口>`（Tailscale Serve 或任意
+    HTTPS 反代）访问并重新"添加到主屏幕"；iOS 需 16.4+。
+
+## 实现（不碰 dsh 本体）
+
+- **失焦折叠**：注入全局 CSS，折叠态 = 卡片上的 `data-meow-smooth="collapsed"`
+  属性把 `[data-input-scroll]` 的 `max-height` 压到 1 行（mirror/backdrop/textarea
+  三层结构不动）；`document` 级 `focusin`/`focusout` 事件委托判定进出卡片，
+  `pointerdown`（capture）兜底"点卡片即展开"，`scrollTop` 存 `WeakMap` 展开时恢复。
+  1 行判定与折叠高度共用 `oneLineHeight()`（实测 line-height + padding，
+  写入 `--meow-smooth-one-line` 变量）；触屏点卡片外 `click`（capture）兜底折叠。
+- **审批/提问提醒（host + client 双端）**：
+  - host（`src/index.ts`）：`ctx.on('session/event')` 监听审计流
+    `approval/asked`/`approval/decided` 投影未决审批，启动时扫描已挂会话
+    恢复孤儿项（覆盖 apiproxy 内存 pending 在 host 重启后丢失的场景）；
+    `ctx.on('approval/request')` waterfall 纯观察补 reason（必须 `next()`
+    放行）；`ctx.webServer.register` 挂只读路由 `/plugins/meow-smooth/pending`
+    （需 `inject` 声明必需服务，实测 cordis 装配形态要求 inject 非空
+    ctx.get 才能命中服务 store）。
+  - client（`src/client.ts`）：3s 轮询 pending 路由 + 隐形 dock
+    （`conversation.composer.dock`）用 `useSessions` 汇报跨会话
+    `pendingInteraction`（approval/question/plan-review，含标题）；
+    合并后窄屏（< 1024px）fixed 顶部横幅（z-index 9998，IME 条 9999
+    优先）；点"查看"→ `ctx.sessions.open` 跳转（失败重试 3 次），
+    1.5s 后检测官方面板（`[data-approval-key]` 等），接管则隐藏，未接管
+    展开详情（toolName/reason/命令/失效提示）。
+- **通知（`src/notify-host.ts` + `src/notify-client.ts`）**：
+  - host：长任务完成检测（turn/start + tool/call 计数，turn/end ≥ 阈值入
+    队，`/pending` 返回 events）；PWA 资源路由（manifest/sw.js/icon-180.png
+    ——zlib 手写 PNG，`Service-Worker-Allowed: /` 放开 SW scope）；Web Push
+    推送器（`web-push` 动态 import——CJS 包 bundle 进 ESM 会动态 require
+    崩溃，必须 external + 运行时加载；API 在 `import('web-push').default`
+    上）；VAPID/订阅持久化 `$DSH_HOME/.meow-smooth/`；404/410 清失效订阅。
+  - client：首次用户手势请求 Notification 权限；pending 新增 + 页面
+    hidden → 系统通知（approval 用 approvalId 去重，提问用 会话:类型，
+    pending 消失即移除）；完成事件 localStorage 去重；secure context 下
+    注册 SW + push 订阅上报；SW notificationclick → postMessage 跳转会话。
+- **模型名折叠**：`@media (max-width: 1023px)` 命中
+  `[data-slot="conversation.input.model"]` 的 trigger（slot renderer 标准输出锚点），
+  压宽 + 隐藏 effort 文字，label 自带省略号。
+- **禁缩放**：原地补全 viewport meta（`maximum-scale=1, user-scalable=no`）、
+  `touch-action: manipulation`、iOS `gesturestart/gesturechange` preventDefault。
+- **手机换行**：`keydown`（capture，早于 React onKeyDown）拦截触屏 Enter，
+  插入 `\n` 并派发 `InputEvent('input')` 让受控层（keyboard.setDraft）感知；
+  粗指针判定用 `matchMedia('(pointer: coarse)')`。
+- **窄屏收起侧边栏**：隐形槽位挂 `conversation.composer.dock`（InputZone 随
+  会话快照重渲染），`session.sessionId` 变化时判定「frame 宽 < 1024 && 侧边栏
+  展开（frame 无 `data-sidebar-collapsed`）」→ 调 `ctx.layout.toggleSidebar()`
+  （窄屏语义 = flip `narrowExpanded`，收起）。首次挂载只记录不动作。
+
+- **后台任务数 / 子代理按钮缩窄**：`@media (max-width: 1023px)` 下按结构
+  定位 `button[aria-expanded]:not([aria-haspopup])`（job-list）与
+  `button[aria-haspopup="tree"]`（subagent-catalog），隐藏计数 span 与
+  无 `data-state` 的 chevron svg，只留 StateDot 小图标；空闲态用 `:has()`
+  判定补中性灰点兜底——按钮始终可见可点，菜单开合本就在按钮 onClick。
+- **header 横向滑动**：同媒体查询内把 titleRow（header 首个子 div）改
+  `overflow-x: auto`，titleCluster/crumbs 改 `flex: none; min-width:
+  max-content`，crumb 按钮去 `max-width: 220px` 与 ellipsis——name 全宽，
+  其余内容依次排后，超宽即滑动；滚动条隐藏（`scrollbar-width` +
+  `::-webkit-scrollbar`），触屏原生滑动。
+
+
+- **禁用橡皮筋**：`overscroll-behavior: none` 拦现代浏览器（含 Chrome
+  安卓下拉刷新与滚动链）；旧 iOS 兜底 = touchstart 定位最近可滚动祖先
+  （overflow auto/scroll 且有溢出）+ touchmove（passive:false）在滑动
+  方向已到边界时 preventDefault——容器内滚动照常，编辑控件（textarea/
+  input）放行防选择句柄失效。
+## 安装
+
+前置要求：dsh（DeepSeek Harness）0.x、Node.js ≥ 22、dsh-meow pnpm workspace（构建期需要它的
+`@deepseek-ai/*` 包做类型与依赖解析，`link-workspace` 负责建 junction 镜像）。
+
+```sh
+# 1. 建 node_modules/@deepseek-ai junction 镜像（指向 dsh-meow workspace）
+npm run link-workspace -- -MeowRoot D:\path\to\dsh-meow
+
+# 2. 构建双产物：lib/index.js（host）+ lib/client.js（browser）
+npm run build
+```
+
+装配（二选一）：
+
+- **profile 装配**：把 `cordis.patch.yml` 的 insert 条目加进目标 profile 的
+  `cordis.patch.yml`（或把本包加入 profile 的 bundles 列表），重启 dsh 生效；
+- **npm 包安装**：`npm pack` 产出 tgz，在 dsh profile 里 `npm install <tgz>`，
+  浏览器端经 `dsh.client.platform: web` 声明由 dsh-client-modules 装配，
+  host 侧经 `cordis.patch.yml` insert 条目加载（审批审计投影 + 只读状态路由）。
+
+### 通知功能（功能 15）额外要求
+
+- **HTTPS**：Web Push / Service Worker 要求 secure context——手机端需要一个
+  HTTPS 入口（Tailscale Serve、Caddy、nginx 均可），并从该入口"添加到主屏幕"；
+- **iOS**：16.4+（Web Push for Home Screen Web Apps），需在 PWA（从主屏幕图标
+  打开）里完成通知授权；
+- **VAPID keys**：首次启动自动生成，持久化在 `$DSH_HOME/.meow-smooth/`。
+  长任务完成阈值 `longTaskToolCalls`（默认 7）可在 patch config 里调整。
+
+## 免责声明
+
+本插件是喵版定制（dsh-meow 生态），与官方上游无关联。

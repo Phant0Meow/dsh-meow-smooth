@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.log
+*.bak-*
+scripts/inspect-db.mjs
+# lockfile 由 npm 从 npx 缓存的 @deepseek-ai junction 解析出绝对路径
+# （含本机用户名/缓存路径），不入库（npm pack 也会自动排除它）
+package-lock.json
