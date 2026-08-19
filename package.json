@@ -24,7 +24,9 @@
     "lib/index.js.map",
     "lib/client.js",
     "lib/client.js.map",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "assets/icon-180.png",
+    "assets/icon-512.png"
   ],
   "license": "MIT",
   "dsh": {

@@ -131,6 +131,16 @@ function pngIcon(): Buffer {
   ])
 }
 
+/** 图标读取：优先 assets/ 静态文件（DeepSeek Harness 官方小鲸鱼图标，
+ *  白底），缺失/损坏时 fallback 到手写渐变（pngIcon）。 */
+function iconPng(size: 180 | 512): Buffer {
+  try {
+    return readFileSync(new URL(`../assets/icon-${size}.png`, import.meta.url))
+  } catch {
+    return pngIcon()
+  }
+}
+
 /** Service Worker 源码（push → 通知；notificationclick → 聚焦/打开 +
  *  postMessage 给页面跳转目标会话）。 */
 function swSource(): string {
@@ -177,7 +187,10 @@ function manifestSource(): string {
     display: 'standalone',
     start_url: '/',
     scope: '/',
-    icons: [{ src: '/plugins/meow-smooth/icon-180.png', sizes: '180x180', type: 'image/png' }],
+    icons: [
+      { src: '/plugins/meow-smooth/icon-180.png', sizes: '180x180', type: 'image/png' },
+      { src: '/plugins/meow-smooth/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
   })
 }
 
@@ -369,7 +382,8 @@ interface WebPushMod {
   }
 
   // --- PWA 资源 + 订阅路由 ---
-  const iconPng = pngIcon()
+  const icon180 = iconPng(180)
+  const icon512 = iconPng(512)
   const sw = swSource()
   const manifest = manifestSource()
   const webServer = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
@@ -388,7 +402,15 @@ interface WebPushMod {
         path: '/plugins/meow-smooth/icon-180.png',
         handler: (_req, res) => {
           res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' })
-          res.end(iconPng)
+          res.end(icon180)
+        },
+      },
+      {
+        kind: 'exact',
+        path: '/plugins/meow-smooth/icon-512.png',
+        handler: (_req, res) => {
+          res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' })
+          res.end(icon512)
         },
       },
       {
