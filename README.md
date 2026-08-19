@@ -135,16 +135,18 @@ dsh（DeepSeek Harness）前端行为增强插件，**零 dsh 本体改动**，�
   input）放行防选择句柄失效。
 ## 安装
 
-前置要求：dsh（DeepSeek Harness）0.x、Node.js ≥ 22、dsh-meow pnpm workspace（构建期需要它的
-`@deepseek-ai/*` 包做类型与依赖解析，`link-workspace` 负责建 junction 镜像）。
+前置要求：dsh（DeepSeek Harness）0.x、Node.js ≥ 22。
 
 ```sh
-# 1. 建 node_modules/@deepseek-ai junction 镜像（指向 dsh-meow workspace）
-npm run link-workspace -- -MeowRoot D:\path\to\dsh-meow
-
-# 2. 构建双产物：lib/index.js（host）+ lib/client.js（browser）
-npm run build
+npm install   # esbuild（构建）+ web-push（运行时，host 端 Web Push）
+npm run build # 双产物：lib/index.js（host）+ lib/client.js（browser）
 ```
+
+构建**零 dsh 本体依赖**：代码只用到两个官方类型（`SessionId` / `ILayout`），
+已在 `src/client.ts` 内以最小接口本地声明（结构类型兼容官方定义，官方接口
+新增方法不影响）——不需要安装任何 `@deepseek-ai/*` 包，也不需要 dsh 源码
+workspace。（`scripts/link-workspace.ps1` 是历史开发工具，为旧版构建建
+node_modules junction 镜像，当前构建不再需要。）
 
 装配（二选一）：
 

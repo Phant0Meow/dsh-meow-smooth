@@ -84,9 +84,20 @@
  */
 
 import { useEffect } from 'react'
-import type { SessionId } from '@deepseek-ai/dsh-client-connection/client'
-import type { ILayout } from '@deepseek-ai/dsh-client-ui-layout/client'
 import { installNotifyClient, type NotifyItem } from './notify-client.ts'
+
+/** 官方类型的最小本地声明（构建零 @deepseek-ai 依赖）。
+ *
+ * 曾经 `import type` 自 @deepseek-ai/dsh-client-connection 与
+ * dsh-client-ui-layout——esbuild 会擦除 type-only import（不解析模块），
+ * 但 IDE/tsc 类型检查需要它们，而官方包 peer 链复杂（rc.8 家族依赖未
+ * 发布的 @deepseek-ai/dsh-paths，npm 装不上）。这里声明实际用到的两个
+ * 最小接口：SessionId 本质是 string；ILayout 只用 toggleSidebar()。
+ * 结构类型兼容官方定义——官方接口新增方法不影响本声明。 */
+type SessionId = string
+interface ILayout {
+  toggleSidebar(): void
+}
 
 /** 折叠状态属性（挂在 composer 卡片上）。 */
 const FOLD_ATTR = 'data-meow-smooth'
