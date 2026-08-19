@@ -78,15 +78,30 @@ export function startCompressProxy(options: CompressProxyOptions): http.Server {
     req.pipe(upstream)
   })
 
-  // WebSocket upgrade 透传（双向 pipe；dsh 目前主要走 SSE，WS 兜底覆盖）。
+  // WebSocket upgrade 透传（双向 pipe；dsh 前端用 WS 连 events.mux/host）。
   server.on('upgrade', (req, socket, head) => {
-    const upstream = http.request({ host: '127.0.0.1', port: targetPort, path: req.url, headers: req.headers })
+    const upstream = http.request({
+      host: '127.0.0.1',
+      port: targetPort,
+      path: req.url,
+      method: req.method,
+      // 显式 Upgrade/Connection 头：Node http.request 默认按 keep-alive 管理
+      // connection，不显式传会把 Upgrade 请求降级成普通请求（上游 426）。
+      headers: { ...req.headers, connection: 'Upgrade', upgrade: 'websocket' },
+    })
     upstream.on('upgrade', (upRes, upSocket, upHead) => {
       socket.write(`HTTP/1.1 101 Switching Protocols\r\n${
         Object.entries(upRes.headers).map(([key, value]) => `${key}: ${value}`).join('\r\n')
       }\r\n\r\n`)
-      if (upHead.length > 0) upSocket.write(upHead)
+      // 上游 101 后已到达的初始数据必须写回【浏览器】方向（之前误写上游导致丢帧断流）。
+      if (upHead.length > 0) socket.write(upHead)
       socket.pipe(upSocket).pipe(socket)
+    })
+    // 上游拒绝（如 426 Upgrade Required）：把状态码透传给浏览器并关闭，不留悬空。
+    upstream.on('response', (upRes) => {
+      socket.write(`HTTP/1.1 ${upRes.statusCode} ${upRes.statusMessage ?? ''}\r\n\r\n`)
+      socket.end()
+      upRes.resume()
     })
     upstream.on('error', () => socket.destroy())
     upstream.end()
