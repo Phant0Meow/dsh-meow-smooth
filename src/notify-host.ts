@@ -74,10 +74,16 @@ function dataDir(): string {
   return join(home, '.meow-smooth')
 }
 
-/** 从会话事件流推导展示名：首个 user/message 文本截断（title 是客户端
- *  投影字段，host 无标题服务；第一句足够区分会话）。 */
+/** 从会话事件流推导展示名：优先折叠官方 session/title 事件（last-wins，
+ *  与卡片/列表一致），无则回退首个 user/message 文本截断。 */
 function sessionTitleFromEvents(events: unknown[] | undefined): string {
   if (!Array.isArray(events)) return ''
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i] as { type?: string; data?: { title?: unknown } } | undefined
+    if (event?.type === 'session/title' && typeof event.data?.title === 'string' && event.data.title !== '') {
+      return event.data.title
+    }
+  }
   for (const event of events) {
     if (event?.type !== 'user/message') continue
     const data = event.data as { content?: readonly { type?: string; text?: string }[] } | undefined
@@ -316,8 +322,8 @@ interface WebPushMod {
     }
   }
 
-  /** 通用 webhook 通道（Bark 等）：POST { title, body, kind, sessionId }；
-   *  未配置或失败静默。 */
+  /** 通用 webhook 通道（Bark 等）：POST { title, body, group, kind,
+   *  sessionId }；未配置或失败静默。group 供 Bark 通知分组折叠。 */
   const webhookUrl = config?.webhookUrl
   const sendWebhook = (payload: PushPayload): void => {
     if (typeof webhookUrl !== 'string' || webhookUrl === '') return
@@ -325,7 +331,7 @@ interface WebPushMod {
       void fetch(webhookUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, group: 'dsh' }),
       }).catch(() => { /* webhook 失败静默 */ })
     } catch {
       // webhook 失败静默
