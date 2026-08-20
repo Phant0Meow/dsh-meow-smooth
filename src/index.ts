@@ -31,6 +31,21 @@ interface PendingApprovalView {
   orphan: boolean
 }
 
+/** 一条投影出的未决提问（key=callId）。提问无专用审计事件（只有 approval
+ *  有 asked/decided 对），从 tool/call(ask_user_question) 登记、
+ *  tool/result(message.source.callId 配对) 移除——审计日志持久，host
+ *  重启/客户端断线重连后仍可恢复（client 帧链路的权威兜底：client 的
+ *  pendingInteractions 断线清空后靠 mux 重放恢复，iOS 丢帧即永久缺失）。 */
+interface PendingQuestionView {
+  sessionId: string
+  callId: string
+  askedAt: number
+  /** plan-review 呈现意图（questions 里任一 intent.kind === 'plan-review'）。 */
+  planReview: boolean
+  /** host 重启后从审计恢复的项：apiproxy 已无对应 rpcId，无法应答。 */
+  orphan: boolean
+}
+
 import { installNotifyHost } from './notify-host.ts'
 import { startCompressProxy, resolveTargetPort } from './compress-proxy.ts'
 
@@ -91,6 +106,7 @@ export function apply(ctx: any, config?: Config): void {
     }
   }
   const pending = new Map<string, PendingApprovalView>()
+  const pendingQuestions = new Map<string, PendingQuestionView>()
   /** 待消费的 reason 观察记录：key = `sessionId|callId`。approval/request
    *  在 approval/asked append 后的微任务 dispatch，asked 事件先到、登记
    *  pending，随后观察者补 reason；消费即删。带时间戳，定期清理防泄漏。 */
@@ -118,6 +134,20 @@ export function apply(ctx: any, config?: Config): void {
       }
       return next()
     })
+  }
+
+  /** 从 tool/call arguments（JSON 字符串）判定 plan-review 呈现意图：
+   *  questions 里任一 intent.kind === 'plan-review'（与官方面板
+   *  planReviewOf 同判定；detail 存在性不影响横幅分类）。解析失败一律
+   *  按普通提问登记（跳转后官方面板显示真实内容）。 */
+  const planReviewOf = (raw: unknown): boolean => {
+    try {
+      const args = JSON.parse(typeof raw === 'string' ? raw : '') as { questions?: Array<{ intent?: { kind?: string } }> }
+      const questions = args?.questions
+      return Array.isArray(questions) && questions.some(q => q?.intent?.kind === 'plan-review')
+    } catch {
+      return false
+    }
   }
 
   // --- 审计投影 ---
@@ -151,6 +181,22 @@ export function apply(ctx: any, config?: Config): void {
       } else if (event?.type === 'approval/decided') {
         const id: string = data?.id ?? ''
         if (id !== '') pending.delete(id)
+      } else if (event?.type === 'tool/call' && data?.name === 'ask_user_question') {
+        const callId: string = data?.callId ?? ''
+        if (callId === '' || pendingQuestions.has(callId)) return
+        const sessionId: string = session?.id ?? ''
+        pendingQuestions.set(callId, {
+          sessionId,
+          callId,
+          askedAt: Date.now(),
+          planReview: planReviewOf(data?.arguments),
+          orphan: false,
+        })
+      } else if (event?.type === 'tool/result') {
+        // 配对字段：tool/result 的 callId 在 message.source.callId（core
+        // 契约，repair 会给中断的工具补合成 result，故最终必有配对）。
+        const callId: unknown = data?.message?.source?.callId
+        if (typeof callId === 'string') pendingQuestions.delete(callId)
       }
     } catch {
       // 投影失败静默：轮询接口仍返回已有数据。
@@ -183,6 +229,27 @@ export function apply(ctx: any, config?: Config): void {
             toolName: typeof event.data?.toolName === 'string' ? event.data.toolName : '',
             ...(typeof callId === 'string' ? { callId } : {}),
             askedAt: Date.now(),
+            orphan: true,
+          })
+        }
+        // 提问孤儿恢复：tool/call(ask_user_question) 无配对 tool/result。
+        const decidedCalls = new Set<string>()
+        for (const event of events) {
+          const resultCallId: unknown = event?.data?.message?.source?.callId
+          if (event?.type === 'tool/result' && typeof resultCallId === 'string') {
+            decidedCalls.add(resultCallId)
+          }
+        }
+        for (const event of events) {
+          if (event?.type !== 'tool/call' || event.data?.name !== 'ask_user_question') continue
+          const callId: unknown = event.data?.callId
+          if (typeof callId !== 'string' || callId === '') continue
+          if (decidedCalls.has(callId) || pendingQuestions.has(callId)) continue
+          pendingQuestions.set(callId, {
+            sessionId: session.id,
+            callId,
+            askedAt: Date.now(),
+            planReview: planReviewOf(event.data?.arguments),
             orphan: true,
           })
         }
@@ -236,11 +303,18 @@ export function apply(ctx: any, config?: Config): void {
               orphan: view.orphan,
             }
           })
+          const questions = [...pendingQuestions.values()].map((view) => ({
+            sessionId: view.sessionId,
+            callId: view.callId,
+            planReview: view.planReview,
+            askedAt: view.askedAt,
+            orphan: view.orphan,
+          }))
           res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',
             'cache-control': 'no-store',
           })
-          res.end(JSON.stringify({ approvals, events: notify.completionEvents() }))
+          res.end(JSON.stringify({ approvals, questions, events: notify.completionEvents() }))
         } catch {
           res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
           res.end('{"error":"internal"}')

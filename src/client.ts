@@ -830,6 +830,16 @@ interface HostApproval {
   orphan: boolean
 }
 
+/** host 端 /plugins/meow-smooth/pending 返回的未决提问（审计投影，
+ *  客户端帧链路的权威兜底：断线重连丢帧后仍可显示横幅）。 */
+interface HostQuestion {
+  sessionId: string
+  callId?: string
+  planReview?: boolean
+  askedAt: number
+  orphan?: boolean
+}
+
 /** 横幅合并条目（host 审批 + 本地提问/计划审，统一呈现）。 */
 interface MergedItem {
   sessionId: string
@@ -851,6 +861,8 @@ let localPending: LocalPendingItem[] = []
 let currentSessionId: string | undefined
 /** host 轮询到的未决审批（含细节与 orphan 标记）。 */
 let hostApprovals: HostApproval[] = []
+/** host 轮询到的未决提问（审计投影；与 localPending 合并时 host 为准）。 */
+let hostQuestions: HostQuestion[] = []
 /** 横幅点击跳转回调（apply 闭包注入 ctx.sessions.open）。 */
 let openSession: ((sessionId: string) => void) | undefined
 /** 当前展示的主条目（renderBanner 写入，点击/详情用）。 */
@@ -904,10 +916,11 @@ function ensurePendingBarSkeleton(bar: HTMLElement): void {
   })
 }
 
-/** 合并当前可见的待处理条目：host 审批（细节全）+ 本地提问/计划审。
- *  当前会话的项在官方面板已显示时剔除（避免与 takeover 面板重复）；
- *  官方面板未显示时保留（host 帧丢失/跳转前，横幅兜底）。approval
- *  优先于提问/计划审（可应答性最强），同类按时间新→旧。 */
+/** 合并当前可见的待处理条目：host 审批（细节全）+ host 提问（审计投影
+ *  权威）+ 本地提问/计划审（host 未覆盖的会话）。当前会话的项在官方
+ *  面板已显示时剔除（避免与 takeover 面板重复）；官方面板未显示时保留
+ *  （host 帧丢失/跳转前，横幅兜底）。approval 优先于提问/计划审（可应答
+ *  性最强），同类按时间新→旧。 */
 function mergedPendingItems(): MergedItem[] {
   const out: MergedItem[] = []
   const localBySession = new Map<string, LocalPendingItem>()
@@ -928,8 +941,22 @@ function mergedPendingItems(): MergedItem[] {
       orphan: approval.orphan,
     })
   }
+  const hostQuestionSessions = new Set<string>()
+  for (const question of hostQuestions) {
+    if (question.sessionId === currentSessionId && panelShown) continue
+    hostQuestionSessions.add(question.sessionId)
+    const local = localBySession.get(question.sessionId)
+    out.push({
+      sessionId: question.sessionId,
+      title: local?.title ?? '',
+      kind: question.planReview === true ? 'plan-review' : 'question',
+      askedAt: question.askedAt,
+      orphan: question.orphan,
+    })
+  }
   for (const item of localPending) {
     if (item.status === 'approval') continue // approval 以 host 为准（细节全）
+    if (hostQuestionSessions.has(item.sessionId)) continue // 提问以 host 投影为准
     if (item.sessionId === currentSessionId && panelShown) continue
     out.push({
       sessionId: item.sessionId,
@@ -974,7 +1001,8 @@ function showPendingDetail(item: MergedItem): void {
     meta.textContent = ''
     meta.style.display = 'none'
     cmd.style.display = 'none'
-    dead.style.display = 'none'
+    dead.style.display = item.orphan === true ? '' : 'none'
+    dead.textContent = '该提问可能已失效（无法应答），可忽略；若 AI 卡住请重发消息。'
   }
 }
 
@@ -1096,14 +1124,21 @@ async function pollHostApprovals(): Promise<void> {
     const res = await fetch('/plugins/meow-smooth/pending', { cache: 'no-store' })
     if (!res.ok) {
       hostApprovals = []
+      hostQuestions = []
       updatePendingBanner()
       return
     }
-    const data = await res.json() as { approvals?: HostApproval[]; events?: { id: string; sessionId: string; toolCalls: number }[] }
+    const data = await res.json() as {
+      approvals?: HostApproval[]
+      questions?: HostQuestion[]
+      events?: { id: string; sessionId: string; toolCalls: number }[]
+    }
     hostApprovals = Array.isArray(data.approvals) ? data.approvals : []
+    hostQuestions = Array.isArray(data.questions) ? data.questions : []
     notifyHandle?.onPollResult({ events: data.events })
   } catch {
     hostApprovals = []
+    hostQuestions = []
   }
   updatePendingBanner()
 }

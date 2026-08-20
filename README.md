@@ -44,11 +44,14 @@ dsh（DeepSeek Harness）前端行为增强插件，**零 dsh 本体改动**，�
 13. **手机端审批/提问提醒横幅**：AI 工作中的权限申请与提问在手机端可能
     因窗口未开/未在目标会话而不显示。host 端审计投影 + 只读路由
     `GET /plugins/meow-smooth/pending` 暴露全部未决审批细节（toolName/
-    reason/命令/失效标记，含服务重启后从审计日志恢复的孤儿项）；client
-    3s 轮询，提问/计划审状态由隐形 dock 经 useSessions 汇报（官方帧
-    驱动，跨会话）。合并后窄屏顶部显示 fixed 横幅：点"查看"跳转目标
-    会话（`ctx.sessions.open`，列表未同步时自动重试），官方面板接管则
-    隐藏，未接管（帧丢失/孤儿审批）则展开详情并提示可能已失效。
+    reason/命令/失效标记，含服务重启后从审计日志恢复的孤儿项）与未决
+    提问（`ask_user_question` 工具调用登记、`tool/result` 移除——提问无
+    专用审计事件，从工具调用审计跟踪，host 重启扫描恢复孤儿）；client
+    3s 轮询，本地提问/计划审状态由隐形 dock 经 useSessions 汇报（官方帧
+    驱动，跨会话）作为 host 投影未覆盖时的补充。合并后窄屏顶部显示
+    fixed 横幅：点"查看"跳转目标会话（`ctx.sessions.open`，列表未同步时
+    自动重试），官方面板接管则隐藏，未接管（帧丢失/孤儿审批）则展开
+    详情并提示可能已失效。
 14. **失焦折叠稳定性修复**：折叠判定对比实测 1 行高（line-height +
     padding）而非滚动窗当前高度——旧逻辑把"无溢出"误判为"只有 1 行"，
     导致多行草稿（≤14 行内）永不折叠；折叠高度用 JS 实测写入 CSS 变量
@@ -79,15 +82,19 @@ dsh（DeepSeek Harness）前端行为增强插件，**零 dsh 本体改动**，�
   写入 `--meow-smooth-one-line` 变量）；触屏点卡片外 `click`（capture）兜底折叠。
 - **审批/提问提醒（host + client 双端）**：
   - host（`src/index.ts`）：`ctx.on('session/event')` 监听审计流
-    `approval/asked`/`approval/decided` 投影未决审批，启动时扫描已挂会话
-    恢复孤儿项（覆盖 apiproxy 内存 pending 在 host 重启后丢失的场景）；
+    `approval/asked`/`approval/decided` 投影未决审批；`tool/call`
+    （`ask_user_question`）登记未决提问、`tool/result`
+    （`message.source.callId` 配对）移除（提问无专用审计事件，从工具
+    调用审计跟踪）；启动时扫描已挂会话恢复两类孤儿项（覆盖 apiproxy
+    内存 pending 在 host 重启后丢失的场景）；
     `ctx.on('approval/request')` waterfall 纯观察补 reason（必须 `next()`
     放行）；`ctx.webServer.register` 挂只读路由 `/plugins/meow-smooth/pending`
     （需 `inject` 声明必需服务，实测 cordis 装配形态要求 inject 非空
     ctx.get 才能命中服务 store）。
-  - client（`src/client.ts`）：3s 轮询 pending 路由 + 隐形 dock
-    （`conversation.composer.dock`）用 `useSessions` 汇报跨会话
-    `pendingInteraction`（approval/question/plan-review，含标题）；
+  - client（`src/client.ts`）：3s 轮询 pending 路由（approvals + questions
+    host 投影为准）+ 隐形 dock（`conversation.composer.dock`）用
+    `useSessions` 汇报跨会话 `pendingInteraction`（approval/question/
+    plan-review，含标题，host 未覆盖时补充，同会话提问以 host 为准）；
     合并后窄屏（< 1024px）fixed 顶部横幅（z-index 9998，IME 条 9999
     优先）；点"查看"→ `ctx.sessions.open` 跳转（失败重试 3 次），
     1.5s 后检测官方面板（`[data-approval-key]` 等），接管则隐藏，未接管

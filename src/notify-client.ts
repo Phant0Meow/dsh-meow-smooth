@@ -118,43 +118,67 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
     }
   }
 
-  // --- 首次用户手势请求权限（浏览器要求授权在交互上下文中更稳） ---
+  // --- PWA 桥：secure context 下注册 SW + push 订阅上报（幂等重试） ---
+  // 时序坑（实测：iOS 订阅从未建立）：订阅逻辑只在页面加载时跑一次，而 iOS
+  // PWA 首次打开时权限弹框尚未授权，pushManager.subscribe 被拒后永不重试
+  // → host subscriptions.json 恒空 → 页面关闭/被杀后无任何推送。
+  // 修复：抽成 ensureSubscription()，权限授权成功与页面重新可见时都会重试
+  // （getSubscription 幂等，成功即停；限次防抖）。
+  const pushSupported = 'serviceWorker' in navigator && window.isSecureContext
+    && typeof navigator.serviceWorker.register === 'function'
+    && typeof Notification !== 'undefined'
+  let subscribeRetries = 0
+  const MAX_SUBSCRIBE_RETRIES = 5
+
+  const ensureSubscription = async (): Promise<void> => {
+    if (!pushSupported || Notification.permission !== 'granted') return
+    if (subscribeRetries >= MAX_SUBSCRIBE_RETRIES) return
+    subscribeRetries += 1
+    try {
+      const registration = await navigator.serviceWorker.register('/plugins/meow-smooth/sw.js', { scope: '/' })
+      const existing = await registration.pushManager.getSubscription()
+      const subscription = existing ?? await (async () => {
+        const res = await fetch('/plugins/meow-smooth/push-config', { cache: 'no-store' })
+        if (!res.ok) return null
+        const data = await res.json() as { enabled?: boolean; publicKey?: string }
+        if (data.enabled !== true || typeof data.publicKey !== 'string') return null
+        return registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(data.publicKey),
+        })
+      })()
+      if (subscription !== null) {
+        await fetch('/plugins/meow-smooth/push-subscribe', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(subscription.toJSON()),
+        })
+        subscribeRetries = MAX_SUBSCRIBE_RETRIES // 上报成功即停
+      }
+    } catch {
+      // SW/订阅失败（权限拒绝、无推送服务等）静默：页面内通知兜底。
+    }
+  }
+
+  // --- 首次用户手势请求权限（浏览器要求授权在交互上下文中更稳）；
+  //     授权成功即补订阅（覆盖"加载时未授权 → 弹框授权"的时序）。 ---
   const requestPermissionOnGesture = (): void => {
     if (typeof Notification === 'undefined' || Notification.permission !== 'default') return
     document.removeEventListener('pointerdown', requestPermissionOnGesture, { capture: true })
     document.removeEventListener('keydown', requestPermissionOnGesture, { capture: true })
-    void Notification.requestPermission().catch(() => { /* 拒绝/异常：横幅兜底 */ })
+    void Notification.requestPermission().then((permission) => {
+      if (permission === 'granted') void ensureSubscription()
+    }).catch(() => { /* 拒绝/异常：横幅兜底 */ })
   }
   document.addEventListener('pointerdown', requestPermissionOnGesture, { capture: true })
   document.addEventListener('keydown', requestPermissionOnGesture, { capture: true })
 
-  // --- PWA 桥：secure context 下注册 SW + push 订阅上报（幂等） ---
-  if ('serviceWorker' in navigator && window.isSecureContext && typeof navigator.serviceWorker.register === 'function') {
-    void (async () => {
-      try {
-        const registration = await navigator.serviceWorker.register('/plugins/meow-smooth/sw.js', { scope: '/' })
-        const existing = await registration.pushManager.getSubscription()
-        const subscription = existing ?? await (async () => {
-          const res = await fetch('/plugins/meow-smooth/push-config', { cache: 'no-store' })
-          if (!res.ok) return null
-          const data = await res.json() as { enabled?: boolean; publicKey?: string }
-          if (data.enabled !== true || typeof data.publicKey !== 'string') return null
-          return registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(data.publicKey),
-          })
-        })()
-        if (subscription !== null) {
-          await fetch('/plugins/meow-smooth/push-subscribe', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(subscription.toJSON()),
-          })
-        }
-      } catch {
-        // SW/订阅失败（权限拒绝、无推送服务等）静默：页面内通知兜底。
-      }
-    })()
+  if (pushSupported) {
+    void ensureSubscription()
+    // 页面重新可见时补订阅（PWA 后台回来 / 权限在别处打开后再回来）。
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') void ensureSubscription()
+    })
     // SW notificationclick 的跳转指令（点通知 → 直达目标会话）。
     navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
       const data = event.data as { type?: string; sessionId?: string } | null
