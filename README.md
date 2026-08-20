@@ -13,12 +13,11 @@ tailscale实现手机端远程连接dsh（插件包含tailscale配置踩坑指�
 
 作者自己在用，亲测好用，非常提高幸福感。
 
-比如，优化前，dsh原生手机端是这副鬼样子：
+比如，优化前，dsh原生手机端是这副鬼样子，而meow-smooth优化后……非常舒适！
+
 <img width="117" height="253" alt="1696d8a7621ce586b7f07e3636b8bf10" src="https://github.com/user-attachments/assets/10f3dcc4-f50c-4812-87d0-683bcc24a2cf" />
-meow-smooth优化后：
 <img width="117" height="253" alt="746b921b2c42f5674f12dfc1270dc5ea" src="https://github.com/user-attachments/assets/bd957efd-29b6-4e3e-8125-cb97035e9a2c" />
 
-非常舒适。
 
 ## 功能
 
