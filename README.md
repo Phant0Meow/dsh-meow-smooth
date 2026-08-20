@@ -74,6 +74,12 @@ dsh（DeepSeek Harness）前端行为增强插件，**零 dsh 本体改动**，�
     **HTTPS 前置**：Web Push / SW 要求 secure context——手机端用
     `https://<你的 MagicDNS 域名>:<serve 端口>`（Tailscale Serve 或任意
     HTTPS 反代）访问并重新"添加到主屏幕"；iOS 需 16.4+。
+    **iOS 已知限制**：iOS 18.x 上 PWA 通知权限弹窗不出现（WebKit 320551）
+    且 APNs 接受但投递不到（WebKit 319865）——iPhone 上系统通知暂不可用。
+    **替代通道（webhook）**：patch 配置 `webhookUrl`（如
+    `https://api.day.app/<Bark key>`）后，三处事件同时 POST
+    `{ title, body, kind, sessionId }` 到该 URL——Bark（iOS 原生推送）等
+    任意接收同构 JSON 的服务即可让手机收到系统通知；失败静默不影响主链路。
 
 ## 实现（不碰 dsh 本体）
 

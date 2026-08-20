@@ -71,6 +71,10 @@ export interface Config extends Record<string, any> {
   vapidPublicKey?: string
   /** Web Push VAPID 私钥（不配则自动生成并持久化）。 */
   vapidPrivateKey?: string
+  /** 通用 webhook 通知 URL（可选，如 Bark https://api.day.app/<key>）：
+   *  审批/提问/长任务完成时 POST JSON，手机系统通知的替代通道
+   *  （iOS Web Push 被系统 bug 卡死时用）。 */
+  webhookUrl?: string
   /** 压缩代理（手机访问加速，默认关闭）：port=代理监听端口（默认 8444）；
    *  targetPort 自动从 dsh --port 解析。开启后把 tailscale serve 等反代
    *  指向 127.0.0.1:<port>。零 dsh 本体改动，见 src/compress-proxy.ts。 */

@@ -47,6 +47,11 @@ export interface NotifyHostConfig {
   /** VAPID keys（不配则自动生成并持久化到 $DSH_HOME/.meow-smooth/）。 */
   vapidPublicKey?: string
   vapidPrivateKey?: string
+  /** 通用 webhook 通知 URL（可选）：审批/提问/长任务完成时 POST
+   *  JSON { title, body, kind, sessionId }。iOS Web Push 被系统 bug 卡死
+   *  的替代通道——配 Bark（https://api.day.app/<key>）即可手机系统通知；
+   *  任意接收同构 JSON 的服务都可用。失败静默，不影响主链路。 */
+  webhookUrl?: string
 }
 
 /** notify-host 对外接口（index.ts 消费）。 */
@@ -311,6 +316,22 @@ interface WebPushMod {
     }
   }
 
+  /** 通用 webhook 通道（Bark 等）：POST { title, body, kind, sessionId }；
+   *  未配置或失败静默。 */
+  const webhookUrl = config?.webhookUrl
+  const sendWebhook = (payload: PushPayload): void => {
+    if (typeof webhookUrl !== 'string' || webhookUrl === '') return
+    try {
+      void fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).catch(() => { /* webhook 失败静默 */ })
+    } catch {
+      // webhook 失败静默
+    }
+  }
+
   // --- 会话标题缓存（sessionId → 首个用户消息截断） ---
   const titleCache = new Map<string, string>()
   const sessionTitle = (sessionId: string): string => {
@@ -347,13 +368,15 @@ interface WebPushMod {
           if (data?.name === 'ask_user_question') {
             const callId: string = data.callId ?? ''
             const title = sessionTitle(sessionId)
-            void sendPush({
+            const payload: PushPayload = {
               kind: 'question',
               title: 'dsh：有提问待回答',
               body: title === '' ? 'AI 正在等你回答问题' : `「${title}」AI 正在等你回答问题`,
               tag: `q:${sessionId}:${callId}`,
               sessionId,
-            })
+            }
+            void sendPush(payload)
+            sendWebhook(payload)
           }
           return
         }
@@ -371,7 +394,7 @@ interface WebPushMod {
           completions.push(item)
           if (completions.length > EVENTS_CAP) completions.shift()
           const title = sessionTitle(sessionId)
-          void sendPush({
+          const payload: PushPayload = {
             kind: 'completed',
             title: 'dsh：任务完成',
             body: title === ''
@@ -379,7 +402,9 @@ interface WebPushMod {
               : `「${title}」长任务完成（${current.calls} 次工具调用）`,
             tag: `c:${item.id}`,
             sessionId,
-          })
+          }
+          void sendPush(payload)
+          sendWebhook(payload)
         }
       } catch {
         // 检测失败静默：不影响审批投影等既有链路。
@@ -539,7 +564,7 @@ interface WebPushMod {
     completionEvents,
     pushApproval(info) {
       const title = sessionTitle(info.sessionId)
-      void sendPush({
+      const payload: PushPayload = {
         kind: 'approval',
         title: 'dsh：有权限申请待处理',
         body: title === ''
@@ -547,7 +572,9 @@ interface WebPushMod {
           : `「${title}」工具 ${info.toolName} 请求权限`,
         tag: `a:${info.approvalId}`,
         sessionId: info.sessionId,
-      })
+      }
+      void sendPush(payload)
+      sendWebhook(payload)
     },
   }
 }
