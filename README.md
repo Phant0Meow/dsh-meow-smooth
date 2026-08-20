@@ -15,7 +15,7 @@ tailscale实现手机端远程连接dsh（插件包含tailscale配置踩坑指�
 
 dsh-meow-smooth：
 
-<img width="906" height="743" alt="image" src="https://github.com/user-attachments/assets/e5bb97b6-051e-45a9-b7a9-8437fe400a4c" />
+<img width="725" height="594" alt="image" src="https://github.com/user-attachments/assets/e5bb97b6-051e-45a9-b7a9-8437fe400a4c" />
 
 
 ## 功能
