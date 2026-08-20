@@ -75,6 +75,10 @@ export interface Config extends Record<string, any> {
    *  审批/提问/长任务完成时 POST JSON，手机系统通知的替代通道
    *  （iOS Web Push 被系统 bug 卡死时用）。 */
   webhookUrl?: string
+  /** Bark 通知图标（https URL，如 dsh 插件图标路由）。 */
+  webhookIconUrl?: string
+  /** Bark 通知点击跳转地址（https URL，如 dsh 的 tailscale 入口）。 */
+  webhookAppUrl?: string
   /** 压缩代理（手机访问加速，默认关闭）：port=代理监听端口（默认 8444）；
    *  targetPort 自动从 dsh --port 解析。开启后把 tailscale serve 等反代
    *  指向 127.0.0.1:<port>。零 dsh 本体改动，见 src/compress-proxy.ts。 */
@@ -315,8 +319,15 @@ export function apply(ctx: any, config?: Config): void {
     const dispose = webServer.register({
       kind: 'exact',
       path: '/plugins/meow-smooth/pending',
-      handler: (_req: unknown, res: { writeHead: (code: number, headers: Record<string, string>) => void; end: (body?: string) => void }) => {
+      handler: (req: unknown, res: { writeHead: (code: number, headers: Record<string, string>) => void; end: (body?: string) => void }) => {
         try {
+          // 页面聚焦上报（x-meow-focus 头：1=页面聚焦）：任一页面聚焦时
+          // host 抑制 Web Push 系统通知（卡片气泡负责提醒）。
+          const headers = (req as { headers?: Record<string, string | undefined> })?.headers
+          const focus = headers?.['x-meow-focus']
+          if (focus === '1' || focus === '0') {
+            notify.noteFocus(headers?.['host'], focus === '1')
+          }
           const approvals = [...pending.values()].map((view) => {
             const command = commandFor(view)
             return {

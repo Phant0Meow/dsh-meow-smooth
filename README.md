@@ -75,14 +75,35 @@ dsh（DeepSeek Harness）前端行为增强插件，**零 dsh 本体改动**，�
     `https://<你的 MagicDNS 域名>:<serve 端口>`（Tailscale Serve 或任意
     HTTPS 反代）访问并重新"添加到主屏幕"；iOS 需 16.4+。
     **iOS 已知限制**：iOS 18.x 上 PWA 通知权限弹窗不出现（WebKit 320551）
-    且 APNs 接受但投递不到（WebKit 319865）——iPhone 上系统通知暂不可用。
+    且 APNs 接受但投递不到（WebKit 319865）——iPhone 上系统通知暂不可用
+    （注：授权成功后实际可收到，两项 bug 为概率性问题；已实测 3080 上
+    iOS 系统通知与 Bark 双通道均成功）。
     **替代通道（webhook）**：patch 配置 `webhookUrl`（如
-    `https://api.day.app/<Bark key>`）后，三处事件同时 POST
-    `{ title, body, kind, sessionId }` 到该 URL——Bark（iOS 原生推送）等
-    任意接收同构 JSON 的服务即可让手机收到系统通知；失败静默不影响主链路。
+    `https://api.day.app/<Bark key>`）后，三处事件 POST
+    `{ title, body, group, kind, sessionId }` 到该 URL。**优先级：Web Push
+    （iOS 系统通知）优先，无订阅/全部失败才走 webhook（Bark 兜底）**——
+    iOS 订阅建立后不会双通道重复提醒。Bark 可选 `webhookIconUrl`（通知
+    图标，如插件图标路由）与 `webhookAppUrl`（点击通知跳转地址）。
+    **多实例**：每个实例（3080/3081 等）各自在 patch 里配置，跳转/图标
+    URL 用各自入口（443 与 8443 不同）。
+16. **手机端设置页改造**：视口 < 1024px 时设置面板全窗口显示（无空隙），
+    左侧 sidebar 收成 56px 图标竖列（宽度与主界面边栏收起 rail 一致，
+    36px 圆钮只留图标，右侧 1px 边线区分区域）；点边栏任意处（图标或
+    背景）不切换标签页、边栏滑出展开（220ms 动画）完整显示图标+文字，
+    展开态点边栏按钮正常切页，点右侧空白区域边栏收回 56px（不切页）。
+    桌面宽屏完全保持官方原样（无属性注入、无点击拦截）。
 
 ## 实现（不碰 dsh 本体）
 
+- **手机端设置页（`src/settings-mobile.ts`）**：状态机挂在设置面板
+  `div[role="dialog"] > nav`（SettingsRoot 独有结构，Modal 系 dialog 不命中）
+  的 `data-meow-smooth-settings` 属性（collapsed/expanded/缺席=桌面原样）；
+  MutationObserver 侦测面板挂载（打开即收起态 + 首帧 noanim 标记压制
+  插入闪动动画，下一帧摘除）、matchMedia 跨断点复位；点击拦截在
+  document capture（先于 React 根容器委托）——收起态点边栏任意处
+  （按钮或背景）`stopPropagation` 让官方 onSelect 收不到（只展开不切页），
+  展开态点右侧非交互元素收回；宽度/标签走 CSS transition（220ms 滑出）；
+  nav 右侧 1px 边线用 `::after` 伪元素（不占布局，随宽度动画贴右缘）。
 - **失焦折叠**：注入全局 CSS，折叠态 = 卡片上的 `data-meow-smooth="collapsed"`
   属性把 `[data-input-scroll]` 的 `max-height` 压到 1 行（mirror/backdrop/textarea
   三层结构不动）；`document` 级 `focusin`/`focusout` 事件委托判定进出卡片，

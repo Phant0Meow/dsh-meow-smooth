@@ -86,6 +86,7 @@
 
 import { useEffect } from 'react'
 import { installNotifyClient, type NotifyItem } from './notify-client.ts'
+import { installSettingsMobile } from './settings-mobile.ts'
 
 /** 官方类型的最小本地声明（构建零 @deepseek-ai 依赖）。
  *
@@ -117,10 +118,16 @@ const HEADER_MENU_ATTR = 'data-meow-smooth-menu-open'
  *  契约）。实际折叠高度由 JS 实测后写入 --meow-smooth-one-line 变量
  *  （任何主题/字号都精确等于"未输入时的默认 1 行高度"）。 */
 const FOLDED_MAX_HEIGHT = '30px'
-/** 审批/提问提醒横幅元素标记（body 直接子级：fixed 顶部、z-index 9998、
+/** 审批/提问提醒卡片元素标记（body 直接子级：fixed 顶部、z-index 9998、
  *  仅窄屏显示；IME 悬浮条 9999 优先。二者几乎不会同时出现——审批/提问
  *  pending 时 composer 被 takeover，无法打字）。 */
 const PENDING_BAR_ATTR = 'data-meow-smooth-pending'
+/** 电脑端判定（细指针）：桌面卡片策略=当前会话不弹卡片（官方面板接管
+ *  即足够）；触屏保留"当前会话+面板未接管时显示卡片"（iOS 实例重建
+ *  限制下点卡片 reload 恢复问题窗的兜底）。 */
+const IS_DESKTOP = typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(pointer: fine)').matches === true
 
 const FOLD_CSS = `
 /* 过渡放基础态：折叠/展开双向都有动画。 */
@@ -959,7 +966,7 @@ function mergedPendingItems(): MergedItem[] {
   for (const item of localPending) localBySession.set(item.sessionId, item)
   const panelShown = officialPanelVisible()
   for (const approval of hostApprovals) {
-    if (approval.sessionId === currentSessionId && panelShown) continue
+    if (approval.sessionId === currentSessionId && (panelShown || IS_DESKTOP)) continue
     const local = localBySession.get(approval.sessionId)
     out.push({
       sessionId: approval.sessionId,
@@ -975,7 +982,7 @@ function mergedPendingItems(): MergedItem[] {
   }
   const hostQuestionSessions = new Set<string>()
   for (const question of hostQuestions) {
-    if (question.sessionId === currentSessionId && panelShown) continue
+    if (question.sessionId === currentSessionId && (panelShown || IS_DESKTOP)) continue
     hostQuestionSessions.add(question.sessionId)
     const local = localBySession.get(question.sessionId)
     out.push({
@@ -989,7 +996,7 @@ function mergedPendingItems(): MergedItem[] {
   for (const item of localPending) {
     if (item.status === 'approval') continue // approval 以 host 为准（细节全）
     if (hostQuestionSessions.has(item.sessionId)) continue // 提问以 host 投影为准
-    if (item.sessionId === currentSessionId && panelShown) continue
+    if (item.sessionId === currentSessionId && (panelShown || IS_DESKTOP)) continue
     out.push({
       sessionId: item.sessionId,
       title: item.title,
@@ -1121,7 +1128,13 @@ function reportLocalPending(items: LocalPendingItem[], current: string | undefin
  *  响应里的 events（长任务完成）交给通知模块（localStorage 去重）。 */
 async function pollHostApprovals(): Promise<void> {
   try {
-    const res = await fetch('/plugins/meow-smooth/pending', { cache: 'no-store' })
+    // 聚焦状态随轮询上报（host 据此抑制系统通知：任一页面聚焦 → 不推
+    // Web Push，卡片气泡提醒；跨 origin 时 SW 自身无法互相感知，host
+    // 层统一判定）。
+    const res = await fetch('/plugins/meow-smooth/pending', {
+      cache: 'no-store',
+      headers: { 'x-meow-focus': document.hasFocus() ? '1' : '0' },
+    })
     if (!res.ok) {
       hostApprovals = []
       hostQuestions = []
@@ -1220,6 +1233,8 @@ export function apply(ctx: any): void {
   // 电脑端禁止/缓解页面缩放（需求 15）：拦截 Ctrl 缩放手势/按键 +
   // 缩放偏离检测提示条（桌面浏览器缩放是浏览器级行为，JS 尽力而为）。
   lockDesktopZoom()
+  // 手机端设置页改造（需求 16）：全窗口面板 + 边栏图标竖列/滑出展开状态机。
+  installSettingsMobile()
 
   // 失焦折叠（需求 1）：进出卡片判定 + 点击兜底展开 + 触屏 Enter 换行。
   // 幂等：重复监听时各分支先查状态再动作。

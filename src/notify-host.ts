@@ -48,10 +48,14 @@ export interface NotifyHostConfig {
   vapidPublicKey?: string
   vapidPrivateKey?: string
   /** 通用 webhook 通知 URL（可选）：审批/提问/长任务完成时 POST
-   *  JSON { title, body, kind, sessionId }。iOS Web Push 被系统 bug 卡死
-   *  的替代通道——配 Bark（https://api.day.app/<key>）即可手机系统通知；
-   *  任意接收同构 JSON 的服务都可用。失败静默，不影响主链路。 */
+   *  JSON { title, body, group, kind, sessionId }。iOS Web Push 被系统 bug
+   *  卡死时的替代通道——配 Bark（https://api.day.app/<key>）即可手机
+   *  系统通知；任意接收同构 JSON 的服务都可用。失败静默，不影响主链路。 */
   webhookUrl?: string
+  /** Bark 通知图标（https URL，如 dsh 插件图标路由）。 */
+  webhookIconUrl?: string
+  /** Bark 通知点击跳转地址（https URL，如 dsh 的 tailscale 入口）。 */
+  webhookAppUrl?: string
 }
 
 /** notify-host 对外接口（index.ts 消费）。 */
@@ -60,6 +64,9 @@ export interface NotifyHostHandle {
   completionEvents(): CompletionEvent[]
   /** 审批登记时调用（index.ts 的 approval/asked 投影钩子）→ 推送。 */
   pushApproval(info: { sessionId: string; approvalId: string; toolName: string; reason?: string }): void
+  /** 页面聚焦上报（index.ts 的 /pending 路由读 x-meow-focus 头调用；
+   *  任一页面聚焦时 deliver() 抑制系统通知推送）。 */
+  noteFocus(host: string | undefined, focused: boolean): void
 }
 
 // --- 常量 ---
@@ -153,7 +160,10 @@ function iconPng(size: 180 | 512): Buffer {
 }
 
 /** Service Worker 源码（push → 通知；notificationclick → 聚焦/打开 +
- *  postMessage 给页面跳转目标会话）。 */
+ *  postMessage 给页面跳转目标会话）。push 处理检查聚焦 client：浏览器
+ *  窗口正聚焦在 DSH 页面（用户在看着）时不弹系统通知——页面内卡片
+ *  气泡负责提醒；窗口失焦（切到其他标签/其他 app，Client.focused=false）
+ *  或无可见页面才弹浏览器系统通知。 */
 function swSource(): string {
   return [
     '/* meow-smooth service worker: push notification bridge */',
@@ -163,13 +173,19 @@ function swSource(): string {
     '  let data = {}',
     "  try { data = event.data ? event.data.json() : {} } catch { /* non-JSON payload ignored */ }",
     "  const title = data.title || 'dsh'",
-    '  event.waitUntil(self.registration.showNotification(title, {',
-    "    body: data.body || '',",
-    "    tag: data.tag || 'meow-' + Date.now(),",
-    "    icon: '/plugins/meow-smooth/icon-180.png',",
-    '    data: { sessionId: data.sessionId || null },',
-    "    requireInteraction: data.kind === 'approval' || data.kind === 'question',",
-    '  }))',
+    '  event.waitUntil((async () => {',
+    "    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })",
+    '    const origin = new URL(self.registration.scope).origin',
+    "    const focused = clients.some(c => c.focused === true && new URL(c.url).origin === origin)",
+    '    if (focused) return',
+    '    await self.registration.showNotification(title, {',
+    "      body: data.body || '',",
+    "      tag: data.tag || 'meow-' + Date.now(),",
+    "      icon: '/plugins/meow-smooth/icon-180.png',",
+    "      data: { sessionId: data.sessionId || null },",
+    "      requireInteraction: data.kind === 'approval' || data.kind === 'question',",
+    '    })',
+    '  })())',
     '})',
     "self.addEventListener('notificationclick', (event) => {",
     '  event.notification.close()',
@@ -303,13 +319,37 @@ interface WebPushMod {
     }
   }
 
-  /** 向全部订阅推送一条通知（payload 加密；404/410 清失效订阅）。 */
-  const sendPush = async (payload: PushPayload): Promise<void> => {
-    if (!(await ensurePush()) || subscriptions.length === 0) return
+  /** 页面聚焦感知：client 轮询 /pending 时带 x-meow-focus 头（1=页面
+   *  聚焦）。按 Host 记录（localhost 与 127.0.0.1 是不同 origin，各自
+   *  上报；SW 层无法跨 origin 感知，host 层统一判定）。聚焦窗口 8s 内
+   *  抑制 Web Push（用户在 DSH 页面时卡片气泡负责提醒，不弹系统通知）。 */
+  const FOCUS_WINDOW_MS = 8000
+  const focusedByHost = new Map<string, number>()
+  const noteFocus = (host: string | undefined, focused: boolean): void => {
+    if (typeof host !== 'string' || host === '') return
+    if (focused) focusedByHost.set(host, Date.now())
+    else focusedByHost.delete(host)
+  }
+  const anyFocusedRecently = (): boolean => {
+    const cutoff = Date.now() - FOCUS_WINDOW_MS
+    for (const [host, at] of focusedByHost) {
+      if (at >= cutoff) return true
+      focusedByHost.delete(host) // 过期清理
+    }
+    return false
+  }
+
+  /** 向全部订阅推送一条通知（payload 加密；404/410 清失效订阅）。
+   *  @returns 是否至少一个订阅送达（true=有订阅且发送无异常；false=
+   *  无订阅或全部失败——调用方据此决定 webhook 兜底）。 */
+  const sendPush = async (payload: PushPayload): Promise<boolean> => {
+    if (!(await ensurePush()) || subscriptions.length === 0) return false
+    let delivered = false
     const body = JSON.stringify(payload)
     for (const sub of subscriptions) {
       try {
         await pushMod!.sendNotification(sub as never, body, { TTL: 3600 })
+        delivered = true
       } catch (error) {
         const status = (error as { statusCode?: number })?.statusCode
         if (status === 404 || status === 410) {
@@ -320,18 +360,35 @@ interface WebPushMod {
         }
       }
     }
+    return delivered
   }
 
-  /** 通用 webhook 通道（Bark 等）：POST { title, body, group, kind,
-   *  sessionId }；未配置或失败静默。group 供 Bark 通知分组折叠。 */
+  /** 发送决策：任一 DSH 页面聚焦（用户在看着）→ 不推 Web Push 也不发
+   *  webhook（卡片气泡负责提醒，避免打扰）；无聚焦页面 → Web Push 优先，
+   *  无订阅/全部失败才走 webhook（Bark 兜底）。 */
+  const deliver = async (payload: PushPayload): Promise<void> => {
+    if (anyFocusedRecently()) return
+    const delivered = await sendPush(payload)
+    if (!delivered) sendWebhook(payload)
+  }
+
+  /** 通用 webhook 通道（Bark 等）：POST { title, body, group, icon?, url?,
+   *  kind, sessionId }；未配置或失败静默。group 供 Bark 通知分组折叠；
+   *  icon/url 由 webhookIconUrl/webhookAppUrl 配置（Bark 支持通知图标与
+   *  点击跳转）。 */
   const webhookUrl = config?.webhookUrl
+  const webhookIconUrl = config?.webhookIconUrl
+  const webhookAppUrl = config?.webhookAppUrl
   const sendWebhook = (payload: PushPayload): void => {
     if (typeof webhookUrl !== 'string' || webhookUrl === '') return
     try {
+      const body: Record<string, unknown> = { ...payload, group: 'dsh' }
+      if (typeof webhookIconUrl === 'string' && webhookIconUrl !== '') body.icon = webhookIconUrl
+      if (typeof webhookAppUrl === 'string' && webhookAppUrl !== '') body.url = webhookAppUrl
       void fetch(webhookUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...payload, group: 'dsh' }),
+        body: JSON.stringify(body),
       }).catch(() => { /* webhook 失败静默 */ })
     } catch {
       // webhook 失败静默
@@ -353,6 +410,30 @@ interface WebPushMod {
     titleCache.set(sessionId, title)
     return title
   }
+
+/** 发送去重表（挂 globalThis：热重载会产生新旧两个模块实例，闭包级
+ *  Map 各自独立互不去重——全局表让同事件 3s 内跨实例只发一次）。 */
+const PUSH_DEDUP_KEY = '__meow_smooth_push_dedup__'
+const recentPushes = (
+  (globalThis as Record<string, unknown>)[PUSH_DEDUP_KEY] as Map<string, number> | undefined
+) ?? new Map<string, number>()
+;(globalThis as Record<string, unknown>)[PUSH_DEDUP_KEY] = recentPushes
+
+/** 发送去重（防热重载残留监听器双发）：key 3s 内已发过则跳过。
+ *  审批投影侧有 pending.has 防重，这里补提问/长任务的幂等。 */
+const pushOnce = (key: string, fn: () => void): void => {
+  const now = Date.now()
+  const last = recentPushes.get(key)
+  if (last !== undefined && now - last < 3000) return
+  recentPushes.set(key, now)
+  if (recentPushes.size > 200) {
+    const cutoff = now - 60_000
+    for (const [k, at] of recentPushes) {
+      if (at < cutoff) recentPushes.delete(k)
+    }
+  }
+  fn()
+}
 
   // --- 长任务检测 + 提问检测（session/event 审计流） ---
   if (typeof ctx.on === 'function') {
@@ -376,13 +457,12 @@ interface WebPushMod {
             const title = sessionTitle(sessionId)
             const payload: PushPayload = {
               kind: 'question',
-              title: 'dsh：有提问待回答',
-              body: title === '' ? 'AI 正在等你回答问题' : `「${title}」AI 正在等你回答问题`,
+              title: title === '' ? '未命名会话' : title,
+              body: '有提问待回答，点击查看…',
               tag: `q:${sessionId}:${callId}`,
               sessionId,
             }
-            void sendPush(payload)
-            sendWebhook(payload)
+            pushOnce(`q:${sessionId}:${callId}`, () => { void deliver(payload) })
           }
           return
         }
@@ -402,15 +482,12 @@ interface WebPushMod {
           const title = sessionTitle(sessionId)
           const payload: PushPayload = {
             kind: 'completed',
-            title: 'dsh：任务完成',
-            body: title === ''
-              ? `长任务完成（${current.calls} 次工具调用）`
-              : `「${title}」长任务完成（${current.calls} 次工具调用）`,
+            title: title === '' ? '未命名会话' : title,
+            body: `任务完成（${current.calls} 次工具调用），点击查看…`,
             tag: `c:${item.id}`,
             sessionId,
           }
-          void sendPush(payload)
-          sendWebhook(payload)
+          pushOnce(`c:${item.id}`, () => { void deliver(payload) })
         }
       } catch {
         // 检测失败静默：不影响审批投影等既有链路。
@@ -568,19 +645,17 @@ interface WebPushMod {
 
   return {
     completionEvents,
+    noteFocus,
     pushApproval(info) {
       const title = sessionTitle(info.sessionId)
       const payload: PushPayload = {
         kind: 'approval',
-        title: 'dsh：有权限申请待处理',
-        body: title === ''
-          ? `工具 ${info.toolName} 请求权限`
-          : `「${title}」工具 ${info.toolName} 请求权限`,
+        title: title === '' ? '未命名会话' : title,
+        body: '有权限申请待处理，点击查看…',
         tag: `a:${info.approvalId}`,
         sessionId: info.sessionId,
       }
-      void sendPush(payload)
-      sendWebhook(payload)
+      pushOnce(`a:${info.approvalId}`, () => { void deliver(payload) })
     },
   }
 }
