@@ -1,6 +1,6 @@
 {
   "name": "meow-smooth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "喵丝滑：dsh 前端行为增强——输入框失焦折叠高度 + 窄屏选中 Session 自动收起侧边栏（纯 client 插件，零 dsh 本体改动）",
   "keywords": [
     "deepseek-harness",
