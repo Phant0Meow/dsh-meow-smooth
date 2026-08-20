@@ -254,7 +254,10 @@ interface WebPushMod {
           mkdirSync(dataDir(), { recursive: true })
           writeFileSync(join(dataDir(), 'vapid.json'), JSON.stringify(keys, null, 2), 'utf8')
         }
-        mod.setVapidDetails('mailto:meow-smooth@localhost', vapidPublicKey, vapidPrivateKey)
+        // subject 不能是 localhost——Apple APNs 明确拒绝 localhost subject
+        // （web-push 会 warn "will result in a BadJwtToken error"，实测 403
+        // BadJwtToken）。用仓库 URL 作合法 subject（2026-08-20 实测修复）。
+        mod.setVapidDetails('https://github.com/Phant0Meow/dsh-meow-smooth', vapidPublicKey, vapidPrivateKey)
         pushMod = mod
         return true
       } catch (error) {
