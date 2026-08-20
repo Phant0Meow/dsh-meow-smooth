@@ -854,6 +854,10 @@ let hostApprovals: HostApproval[] = []
 let hostQuestions: HostQuestion[] = []
 /** 卡片点击跳转回调（apply 闭包注入 ctx.sessions.open）。 */
 let openSession: ((sessionId: string) => void) | undefined
+/** 会话列表强制刷新回调（apply 闭包注入 ctx.sessions.refresh；跳转遇
+ *  "unknown session"（列表未同步）时先刷新再重试，修"新会话界面点卡片
+ *  不跳转"）。 */
+let refreshSessions: (() => Promise<void>) | undefined
 /** 当前展示的主条目（renderBanner 写入，点击/详情用）。 */
 let bannerItem: MergedItem | undefined
 /** 卡片交互态：idle = 正常两行提示；fail = 跳转/面板未接管提示。 */
@@ -906,10 +910,19 @@ function ensurePendingBarSkeleton(bar: HTMLElement): void {
   })
 }
 
-/** 隐藏卡片；suppress 时静默同主条目 30s（用户上滑后不被轮询重新弹出）。 */
+/** 隐藏卡片：播放向上滑出动画（iOS 通知交互）后移除可见态；suppress 时
+ *  静默同主条目 30s（用户上滑后不被轮询重新弹出）。 */
 function hideToast(suppress = false): void {
   const bar = pendingBarElement()
-  bar.removeAttribute('data-visible')
+  if (bar.getAttribute('data-visible') === 'true') {
+    bar.style.transform = 'translateY(calc(-100% - 24px))'
+    window.setTimeout(() => {
+      bar.removeAttribute('data-visible')
+      bar.style.transform = ''
+    }, 240)
+  } else {
+    bar.removeAttribute('data-visible')
+  }
   bar.removeAttribute('data-mode')
   bannerMode = 'idle'
   if (suppress && bannerItem !== undefined) {
@@ -990,10 +1003,10 @@ function mergedPendingItems(): MergedItem[] {
 }
 
 /** 跳转目标会话（带重试）：会话列表未同步时 manager.select 抛
- *  "unknown session"，1.5s 后重试（列表加载完即成功），最多 3 次；
- *  仍失败或跳转能力不可用 → 卡片 fail 提示手动切换。跳转成功后 1.5s
- *  检测官方面板：接管则卡片自然隐藏（无多余提示行）；未接管（iOS 实例
- *  重建限制）→ fail 提示已知限制与恢复办法。 */
+ *  "unknown session"——先强制刷新列表（refreshSessions）再重试，最多
+ *  3 轮；仍失败或跳转能力不可用 → 卡片 fail 提示手动切换。跳转成功后
+ *  1.5s 检测官方面板：接管则卡片自然隐藏（无多余提示行）；未接管（iOS
+ *  实例重建限制）→ fail 提示已知限制与恢复办法。 */
 function jumpToSession(item: MergedItem, attempt = 0): void {
   if (openSession === undefined) {
     showFailHint('无法自动切换（跳转能力不可用），请在侧边栏选择该会话。')
@@ -1007,7 +1020,13 @@ function jumpToSession(item: MergedItem, attempt = 0): void {
   }
   if (thrown !== null) {
     if (attempt < 3) {
-      window.setTimeout(() => { jumpToSession(item, attempt + 1) }, 1500)
+      const retry = (): void => window.setTimeout(() => { jumpToSession(item, attempt + 1) }, 800)
+      if (attempt === 0 && refreshSessions !== undefined) {
+        // 首轮失败先刷新列表（手机端刚打开/列表未同步的常见原因）。
+        void refreshSessions().then(retry).catch(retry)
+      } else {
+        retry()
+      }
       return
     }
     showFailHint('无法自动切换（会话列表未同步），请在侧边栏选择该会话。')
@@ -1022,8 +1041,9 @@ function jumpToSession(item: MergedItem, attempt = 0): void {
   }, 1500)
 }
 
-/** 卡片点击：目标会话非当前 → 跳转（带重试）；已是当前 → 面板应已接管，
- *  直接隐藏卡片（点击进入即可，无多余提示）。 */
+/** 卡片点击：目标会话非当前 → 跳转（带重试）；已是当前 → 卡片出现即
+ *  面板未接管（接管时会被剔除）——点卡片 = 恢复问题窗：reload 页面
+ *  （连接重开 → mux 基线重放 → 面板重建，即"重开就好"的机制）。 */
 function onPendingBarClick(): void {
   const item = bannerItem
   if (item === undefined) return
@@ -1031,7 +1051,11 @@ function onPendingBarClick(): void {
     jumpToSession(item)
     return
   }
-  hideToast(false)
+  if (officialPanelVisible()) {
+    hideToast(false)
+    return
+  }
+  window.location.reload()
 }
 
 /** 通知模块句柄（apply 安装；横幅刷新/轮询处调用）。 */
@@ -1081,6 +1105,7 @@ function updatePendingBanner(): void {
     : item.kind === 'plan-review' ? '有计划待审，点击查看…' : '有提问待回答，点击查看…'
   titleEl.textContent = name
   subEl.textContent = what
+  bar.style.transform = '' // 清滑出动画的 inline 位移（显示态由 CSS 规则接管）
   bar.setAttribute('data-visible', 'true')
 }
 
@@ -1120,8 +1145,12 @@ async function pollHostApprovals(): Promise<void> {
 
 /** 安装卡片（apply 调用）：启动轮询 + 可见性刷新。open 为 undefined 时
  *  跳转不可用（sessions 服务缺失），点击卡片提示手动切换。 */
-function installPendingBanner(open: ((sessionId: string) => void) | undefined): void {
+function installPendingBanner(
+  open: ((sessionId: string) => void) | undefined,
+  refresh: (() => Promise<void>) | undefined,
+): void {
   openSession = open
+  refreshSessions = refresh
   void pollHostApprovals()
   window.setInterval(() => { void pollHostApprovals() }, 3000)
   document.addEventListener('visibilitychange', () => {
@@ -1264,19 +1293,23 @@ export function apply(ctx: any): void {
     console.warn('[meow-smooth] layout service unavailable; sidebar auto-collapse disabled')
     return
   }
-  const sessions = ctx?.sessions as { open?: (sessionId: string) => void } | undefined
+  const sessions = ctx?.sessions as { open?: (sessionId: string) => void; refresh?: () => Promise<void> } | undefined
   // 手机端：侧边栏展开时点击右侧空间 → 自动收起（click 而非 pointerdown，
   // 见 onClickDismissSidebar 注释）。
   document.addEventListener('click', (event) => { onClickDismissSidebar(event, layout) }, { capture: true })
-  // 审批/提问提醒横幅（需求 12/13）：host 轮询 + 本地 pending 汇报合并。
-  // sessions 不可用时跳转回调为 undefined（横幅仍显示，提示手动切换）。
+  // 审批/提问提醒卡片（需求 12/13）：host 轮询 + 本地 pending 汇报合并。
+  // sessions 不可用时跳转回调为 undefined（卡片仍显示，提示手动切换）。
   let openSessionFn: ((sessionId: string) => void) | undefined
+  let refreshSessionsFn: (() => Promise<void>) | undefined
   if (sessions === undefined || typeof sessions.open !== 'function') {
     console.warn('[meow-smooth] sessions service unavailable; banner jump disabled')
   } else {
     openSessionFn = (sessionId: string) => { sessions.open(sessionId) }
+    if (typeof sessions.refresh === 'function') {
+      refreshSessionsFn = () => sessions.refresh()
+    }
   }
-  installPendingBanner(openSessionFn)
+  installPendingBanner(openSessionFn, refreshSessionsFn)
   // 通知模块（需求 15）：页面内系统通知 + PWA/SW 桥。SW notificationclick
   // 的跳转指令与横幅跳转共用同一回调。
   notifyHandle = installNotifyClient({ openSession: openSessionFn })
