@@ -272,6 +272,9 @@ interface WebPushMod {
   // --- 订阅持久化（文件 JSON 数组，按 endpoint 去重） ---
   const subscriptionsFile = join(dataDir(), 'subscriptions.json')
   let subscriptions: { endpoint: string; keys?: { p256dh?: string; auth?: string }; expirationTime?: number | null }[] = []
+  /** 客户端诊断上报队列（iOS 真机无 console：client 权限链路状态 POST 到
+   *  /diag-log，服务器侧 GET /diag 查看；上限 100 条防泄漏）。 */
+  const diagLog: { at: number; msg: string }[] = []
   try {
     if (existsSync(subscriptionsFile)) {
       const parsed = JSON.parse(readFileSync(subscriptionsFile, 'utf8'))
@@ -470,6 +473,41 @@ interface WebPushMod {
               res.end('{"error":"bad json"}')
             }
           })
+        },
+      },
+      {
+        kind: 'exact',
+        path: '/plugins/meow-smooth/diag-log',
+        handler: (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
+          if ((req as { method?: string })?.method !== 'POST') {
+            res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+            res.end('{"error":"method not allowed"}')
+            return
+          }
+          let raw = ''
+          ;(req as { on?: (event: string, cb: (chunk: Buffer) => void) => void })?.on?.('data', (chunk: Buffer) => { raw += chunk.toString('utf8') })
+          ;(req as { on?: (event: string, cb: () => void) => void })?.on?.('end', () => {
+            try {
+              const body = JSON.parse(raw) as { msg?: string }
+              if (typeof body.msg === 'string' && body.msg !== '') {
+                diagLog.push({ at: Date.now(), msg: body.msg.slice(0, 200) })
+                if (diagLog.length > 100) diagLog.splice(0, diagLog.length - 100)
+              }
+              res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+              res.end('{"ok":true}')
+            } catch {
+              res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+              res.end('{"error":"bad json"}')
+            }
+          })
+        },
+      },
+      {
+        kind: 'exact',
+        path: '/plugins/meow-smooth/diag',
+        handler: (_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ diag: diagLog }))
         },
       },
     ]

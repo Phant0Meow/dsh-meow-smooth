@@ -57,13 +57,14 @@
  *     全宽），其余动作按窄形态依次排在 name 后面；内容超宽时 titleRow
  *     可左右滑动（滚动条隐藏，触屏原生滑动）。
  *
- * 12. 手机端审批/提问提醒（host 配合见 src/index.ts）：AI 工作中的权限
- *     申请与提问在手机端可能因窗口未开/未在目标会话而不显示。host 端
- *     审计投影 + 只读路由暴露未决审批细节（toolName/reason/命令/失效
- *     标记），client 3s 轮询；提问/计划审状态由 FoldDock 经 useSessions
- *     汇报（官方帧驱动，跨会话）。合并后在窄屏顶部显示 fixed 横幅：
- *     点"查看"跳转目标会话（ctx.sessions.open），官方面板接管则隐藏，
- *     未接管（帧丢失/服务重启的孤儿审批）则展开详情并提示可能已失效。
+ * 12. 手机端审批/提问提醒卡片（host 配合见 src/index.ts）：AI 工作中的
+ *     权限申请与提问在手机端可能因窗口未开/未在目标会话而不显示。host 端
+ *     审计投影 + 只读路由暴露未决审批/提问（含会话标题，修"未命名会话"），
+ *     client 3s 轮询；提问/计划审状态另由 FoldDock 经 useSessions 汇报
+ *     （官方帧驱动，跨会话，host 未覆盖时补充）。合并后顶部显示系统通知
+ *     样式的圆角卡片（v2：两行文字、下滑弹出、整卡点击进入、上滑隐藏、
+ *     30s 静默防重弹）：官方面板接管则隐藏；跳转失败/面板未接管（iOS
+ *     实例重建限制）→ 卡片 fail 提示与恢复办法。纯通知，不做输入。
  *
  * 13. 折叠稳定性修复：折叠判定对比实测 1 行高（line-height + padding）
  *     而非滚动窗当前高度——旧逻辑把"无溢出"误判为"只有 1 行"，导致
@@ -288,72 +289,57 @@ html[${IME_ROOT_ATTR}] [data-slot="conversation.session.header"] > header {
 /* 防双击缩放（触屏双击放大页面）；捏合另由 viewport meta + gesture
    事件拦截（Chrome 安卓会忽略 user-scalable，此为尽力而为）。 */
 html, body { touch-action: manipulation; }
-/* 审批/提问提醒横幅（需求 12/13）：body 直接子级、fixed 钉屏幕顶部。
-   默认隐藏（data-visible 由 JS 控制），仅窄屏（<1024px）显示——桌面有
-   侧边栏状态点 + 官方 takeover 面板，不需要横幅。z-index 9998 让位于
-   IME 悬浮条（9999），二者几乎不会同现（pending 时 composer 被接管）。 */
+/* 审批/提问提醒卡片（需求 12/13，v2：系统通知样式的圆角卡片，替代全宽
+   横条）：fixed 顶部居中、圆角、下滑弹出动画；整卡可点（点击进入目标
+   会话）、上滑手势隐藏。纯通知——回答永远在官方面板，卡片不做输入。
+   z-index 9998 让位于 IME 悬浮条（9999），二者几乎不会同现。 */
 [${PENDING_BAR_ATTR}] {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 12px;
+  right: 12px;
   z-index: 9998;
   display: none;
-  font-size: 13px;
-  line-height: 18px;
+  border-radius: 14px;
+  background: var(--dsw-specific-input-major, #ffffff);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  transform: translateY(calc(-100% - 24px));
+  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  pointer-events: none;
+  -webkit-tap-highlight-color: transparent;
+}
+[${PENDING_BAR_ATTR}][data-visible="true"] {
+  display: block;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+[${PENDING_BAR_ATTR}] .toast-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  padding: 12px 14px 2px;
   color: var(--dsw-alias-label-primary, #222);
-  background: var(--dsw-specific-input-major, #f5f5f5);
-  border-bottom: 1px solid var(--dsw-alias-border-l2, #ddd);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-[${PENDING_BAR_ATTR}][data-visible="true"] { display: block; }
-@media (max-width: 1023px) {
-  [${PENDING_BAR_ATTR}] { padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px; }
-  [${PENDING_BAR_ATTR}] .row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    pointer-events: auto;
-    cursor: pointer;
-  }
-  [${PENDING_BAR_ATTR}] .row .text {
-    flex: 1;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  [${PENDING_BAR_ATTR}] .row .hint {
-    flex: none;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 999px;
-    background: var(--dsw-alias-bg-weak, rgba(0,0,0,0.06));
-  }
-  [${PENDING_BAR_ATTR}] .detail {
-    display: none;
-    margin-top: 6px;
-    padding: 8px 10px;
-    border-radius: 8px;
-    background: var(--dsw-alias-bg-weak, rgba(0,0,0,0.05));
-    pointer-events: auto;
-  }
-  [${PENDING_BAR_ATTR}][data-mode="detail"] .detail { display: block; }
-  [${PENDING_BAR_ATTR}] .detail .head { font-weight: 600; }
-  [${PENDING_BAR_ATTR}] .detail .meta { margin-top: 4px; opacity: 0.85; word-break: break-all; }
-  [${PENDING_BAR_ATTR}] .detail .cmd {
-    margin-top: 6px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    font-family: ui-monospace, monospace;
-    font-size: 12px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    background: var(--dsw-alias-bg-strong, rgba(0,0,0,0.08));
-  }
-  [${PENDING_BAR_ATTR}] .detail .dead { margin-top: 6px; color: #b45309; font-weight: 600; }
+[${PENDING_BAR_ATTR}] .toast-sub {
+  font-size: 12px;
+  line-height: 18px;
+  padding: 0 14px 12px;
+  color: var(--dsw-alias-label-secondary, #666);
 }
+[${PENDING_BAR_ATTR}] .toast-fail {
+  display: none;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 0 14px 12px;
+  color: #b45309;
+}
+[${PENDING_BAR_ATTR}][data-mode="fail"] .toast-sub { display: none; }
+[${PENDING_BAR_ATTR}][data-mode="fail"] .toast-fail { display: block; }
 `
 
 /** 每个滚动窗折叠前的 scrollTop（展开时恢复，防视口错位）。 */
@@ -831,13 +817,16 @@ interface HostApproval {
 }
 
 /** host 端 /plugins/meow-smooth/pending 返回的未决提问（审计投影，
- *  客户端帧链路的权威兜底：断线重连丢帧后仍可显示横幅）。 */
+ *  客户端帧链路的权威兜底：断线重连丢帧后仍可显示卡片）。title 由 host
+ *  折叠 session/title 事件提供（修手机端"未命名会话"——local 快照标题
+ *  在手机上常缺失）。 */
 interface HostQuestion {
   sessionId: string
   callId?: string
   planReview?: boolean
   askedAt: number
   orphan?: boolean
+  title?: string
 }
 
 /** 横幅合并条目（host 审批 + 本地提问/计划审，统一呈现）。 */
@@ -863,12 +852,15 @@ let currentSessionId: string | undefined
 let hostApprovals: HostApproval[] = []
 /** host 轮询到的未决提问（审计投影；与 localPending 合并时 host 为准）。 */
 let hostQuestions: HostQuestion[] = []
-/** 横幅点击跳转回调（apply 闭包注入 ctx.sessions.open）。 */
+/** 卡片点击跳转回调（apply 闭包注入 ctx.sessions.open）。 */
 let openSession: ((sessionId: string) => void) | undefined
 /** 当前展示的主条目（renderBanner 写入，点击/详情用）。 */
 let bannerItem: MergedItem | undefined
-/** 横幅交互态：idle = 单行提示；detail = 展开详情。 */
-let bannerMode: 'idle' | 'detail' = 'idle'
+/** 卡片交互态：idle = 正常两行提示；fail = 跳转/面板未接管提示。 */
+let bannerMode: 'idle' | 'fail' = 'idle'
+/** 用户上滑隐藏后的静默期（同主条目 30s 内不重弹，避免轮询烦人）。 */
+let suppressedUntil = 0
+let suppressedKey = ''
 
 /** 官方 takeover 面板是否正在显示（当前会话的审批/提问/计划审被接管）。 */
 function officialPanelVisible(): boolean {
@@ -877,7 +869,7 @@ function officialPanelVisible(): boolean {
   ) !== null
 }
 
-/** 横幅元素（不存在则创建；body 直接子级，fixed 顶部）。 */
+/** 卡片元素（不存在则创建；body 直接子级，fixed 顶部圆角卡片）。 */
 function pendingBarElement(): HTMLElement {
   const existing = document.querySelector<HTMLElement>(`[${PENDING_BAR_ATTR}]`)
   if (existing !== null) return existing
@@ -887,33 +879,60 @@ function pendingBarElement(): HTMLElement {
   return bar
 }
 
-/** 横幅骨架（.row 提示行 + .detail 详情块；一次性创建）。 */
+/** 卡片骨架（两行文字 + 失败提示；一次性创建；整卡点击进入、上滑隐藏）。 */
 function ensurePendingBarSkeleton(bar: HTMLElement): void {
   if (bar.firstElementChild !== null) return
-  const row = document.createElement('div')
-  row.className = 'row'
-  const text = document.createElement('span')
-  text.className = 'text'
-  const hint = document.createElement('span')
-  hint.className = 'hint'
-  row.append(text, hint)
-  const detail = document.createElement('div')
-  detail.className = 'detail'
-  const head = document.createElement('div')
-  head.className = 'head'
-  const meta = document.createElement('div')
-  meta.className = 'meta'
-  const cmd = document.createElement('div')
-  cmd.className = 'cmd'
-  const dead = document.createElement('div')
-  dead.className = 'dead'
-  detail.append(head, meta, cmd, dead)
-  bar.append(row, detail)
-  row.addEventListener('click', onPendingBarRowClick)
-  detail.addEventListener('click', () => {
-    bannerMode = 'idle'
-    bar.removeAttribute('data-mode')
+  const title = document.createElement('div')
+  title.className = 'toast-title'
+  const sub = document.createElement('div')
+  sub.className = 'toast-sub'
+  const fail = document.createElement('div')
+  fail.className = 'toast-fail'
+  bar.append(title, sub, fail)
+  bar.addEventListener('click', onPendingBarClick)
+  // 上滑隐藏（系统通知手势）：touch 累计位移 < -40px 视为上滑。
+  let touchStartY = 0
+  let touchDy = 0
+  bar.addEventListener('touchstart', (event) => {
+    touchStartY = event.touches[0]?.clientY ?? 0
+    touchDy = 0
+  }, { passive: true })
+  bar.addEventListener('touchmove', (event) => {
+    const y = event.touches[0]?.clientY ?? touchStartY
+    touchDy = y - touchStartY
+  }, { passive: true })
+  bar.addEventListener('touchend', () => {
+    if (touchDy < -40) hideToast(true)
   })
+}
+
+/** 隐藏卡片；suppress 时静默同主条目 30s（用户上滑后不被轮询重新弹出）。 */
+function hideToast(suppress = false): void {
+  const bar = pendingBarElement()
+  bar.removeAttribute('data-visible')
+  bar.removeAttribute('data-mode')
+  bannerMode = 'idle'
+  if (suppress && bannerItem !== undefined) {
+    suppressedUntil = Date.now() + 30_000
+    suppressedKey = `${bannerItem.sessionId}:${bannerItem.kind}`
+  }
+}
+
+/** 失败提示（跳转失败 / 面板未接管）：卡片切 fail 模式，6s 后自动恢复。 */
+function showFailHint(text: string): void {
+  const bar = pendingBarElement()
+  ensurePendingBarSkeleton(bar)
+  const fail = bar.querySelector<HTMLElement>('.toast-fail')
+  if (fail !== null) fail.textContent = text
+  bar.setAttribute('data-mode', 'fail')
+  bar.setAttribute('data-visible', 'true')
+  bannerMode = 'fail'
+  window.setTimeout(() => {
+    if (bannerMode === 'fail') {
+      bannerMode = 'idle'
+      document.querySelector<HTMLElement>(`[${PENDING_BAR_ATTR}]`)?.removeAttribute('data-mode')
+    }
+  }, 6000)
 }
 
 /** 合并当前可见的待处理条目：host 审批（细节全）+ host 提问（审计投影
@@ -948,7 +967,7 @@ function mergedPendingItems(): MergedItem[] {
     const local = localBySession.get(question.sessionId)
     out.push({
       sessionId: question.sessionId,
-      title: local?.title ?? '',
+      title: question.title ?? local?.title ?? '',
       kind: question.planReview === true ? 'plan-review' : 'question',
       askedAt: question.askedAt,
       orphan: question.orphan,
@@ -970,49 +989,14 @@ function mergedPendingItems(): MergedItem[] {
   return out
 }
 
-/** 官方审批帧是否到达该会话（localPending 有 approval 状态 = 官方链路
- *  活着，跳转后面板应能显示；没有 = 帧未同步/已失效）。 */
-function officialApprovalAlive(sessionId: string): boolean {
-  return localPending.some(item => item.sessionId === sessionId && item.status === 'approval')
-}
-
-/** 展开详情（approval 显示 toolName/reason/命令/失效提示；提问/计划审
- *  无细节可展示，提示跳转即可）。 */
-function showPendingDetail(item: MergedItem): void {
-  bannerMode = 'detail'
-  const bar = pendingBarElement()
-  ensurePendingBarSkeleton(bar)
-  bar.setAttribute('data-mode', 'detail')
-  const head = bar.querySelector<HTMLElement>('.head')
-  const meta = bar.querySelector<HTMLElement>('.meta')
-  const cmd = bar.querySelector<HTMLElement>('.cmd')
-  const dead = bar.querySelector<HTMLElement>('.dead')
-  if (head === null || meta === null || cmd === null || dead === null) return
-  if (item.kind === 'approval') {
-    head.textContent = item.toolName === '' ? '权限申请' : `工具 ${item.toolName} 请求权限`
-    meta.textContent = item.reason ?? ''
-    meta.style.display = item.reason === undefined || item.reason === '' ? 'none' : ''
-    cmd.textContent = item.command ?? ''
-    cmd.style.display = item.command === undefined || item.command === '' ? 'none' : ''
-    dead.style.display = item.orphan === true || !officialApprovalAlive(item.sessionId) ? '' : 'none'
-    dead.textContent = '该申请可能已失效（无法应答），可忽略；若 AI 卡住请重发消息。'
-  } else {
-    head.textContent = item.kind === 'plan-review' ? '计划等待审批' : '提问等待回答'
-    meta.textContent = ''
-    meta.style.display = 'none'
-    cmd.style.display = 'none'
-    dead.style.display = item.orphan === true ? '' : 'none'
-    dead.textContent = '该提问可能已失效（无法应答），可忽略；若 AI 卡住请重发消息。'
-  }
-}
-
 /** 跳转目标会话（带重试）：会话列表未同步时 manager.select 抛
  *  "unknown session"，1.5s 后重试（列表加载完即成功），最多 3 次；
- *  仍失败或跳转能力不可用 → 展开详情并提示手动切换。 */
+ *  仍失败或跳转能力不可用 → 卡片 fail 提示手动切换。跳转成功后 1.5s
+ *  检测官方面板：接管则卡片自然隐藏（无多余提示行）；未接管（iOS 实例
+ *  重建限制）→ fail 提示已知限制与恢复办法。 */
 function jumpToSession(item: MergedItem, attempt = 0): void {
   if (openSession === undefined) {
-    showPendingDetail(item)
-    markJumpFailed()
+    showFailHint('无法自动切换（跳转能力不可用），请在侧边栏选择该会话。')
     return
   }
   let thrown: unknown = null
@@ -1026,38 +1010,28 @@ function jumpToSession(item: MergedItem, attempt = 0): void {
       window.setTimeout(() => { jumpToSession(item, attempt + 1) }, 1500)
       return
     }
-    showPendingDetail(item)
-    markJumpFailed()
+    showFailHint('无法自动切换（会话列表未同步），请在侧边栏选择该会话。')
     return
   }
-  // 跳转成功：1.5s 后检测官方面板（接管则隐藏横幅，未接管则展开详情）。
   window.setTimeout(() => {
     if (officialPanelVisible()) {
       updatePendingBanner()
     } else {
-      showPendingDetail(item)
+      showFailHint('已进入会话，但问题窗未显示（iOS 已知限制），重开页面可恢复回答。')
     }
   }, 1500)
 }
 
-/** 跳转失败提示（覆盖详情里的失效提示文本）。 */
-function markJumpFailed(): void {
-  const bar = pendingBarElement()
-  const dead = bar.querySelector<HTMLElement>('.dead')
-  if (dead === null) return
-  dead.style.display = ''
-  dead.textContent = '无法自动切换到目标会话（会话列表未同步），请在侧边栏手动选择该会话。'
-}
-
-/** 横幅提示行点击：目标会话非当前 → 跳转（带重试）；已是当前 → 展开详情。 */
-function onPendingBarRowClick(): void {
+/** 卡片点击：目标会话非当前 → 跳转（带重试）；已是当前 → 面板应已接管，
+ *  直接隐藏卡片（点击进入即可，无多余提示）。 */
+function onPendingBarClick(): void {
   const item = bannerItem
   if (item === undefined) return
   if (item.sessionId !== currentSessionId) {
     jumpToSession(item)
     return
   }
-  showPendingDetail(item)
+  hideToast(false)
 }
 
 /** 通知模块句柄（apply 安装；横幅刷新/轮询处调用）。 */
@@ -1076,36 +1050,37 @@ function notifyItemsOf(merged: MergedItem[]): NotifyItem[] {
   }))
 }
 
-/** 横幅整体刷新：合并数据 → 更新提示行（保持 detail 态除非主条目变化）
- *  + 通知模块 pending 变化（页面 hidden 时弹系统通知）。 */
+/** 卡片整体刷新：合并数据 → 两行文字（会话名 + 提示）+ 通知模块
+ *  pending 变化（页面 hidden 时弹系统通知）。用户上滑隐藏后同主条目
+ *  30s 静默；主条目变化（新 pending）重新弹出。 */
 function updatePendingBanner(): void {
   const items = mergedPendingItems()
   notifyHandle?.onPending(notifyItemsOf(items))
   const bar = pendingBarElement()
   if (items.length === 0) {
     bannerItem = undefined
-    bar.removeAttribute('data-visible')
-    bar.removeAttribute('data-mode')
-    bannerMode = 'idle'
+    hideToast(false)
     return
   }
   const item = items[0]
   if (bannerItem === undefined
     || bannerItem.sessionId !== item.sessionId || bannerItem.kind !== item.kind) {
-    bannerMode = 'idle' // 主条目变了，收起的详情态作废
+    bannerMode = 'idle' // 主条目变了，收起 fail 态并解除静默（重新弹）
+    suppressedUntil = 0
   }
   bannerItem = item
+  const key = `${item.sessionId}:${item.kind}`
+  if (suppressedUntil > Date.now() && suppressedKey === key) return
   ensurePendingBarSkeleton(bar)
-  if (bannerMode === 'detail') bar.setAttribute('data-mode', 'detail')
-  else bar.removeAttribute('data-mode')
-  const text = bar.querySelector<HTMLElement>('.text')
-  const hint = bar.querySelector<HTMLElement>('.hint')
-  if (text === null || hint === null) return
+  if (bannerMode !== 'fail') bar.removeAttribute('data-mode')
+  const titleEl = bar.querySelector<HTMLElement>('.toast-title')
+  const subEl = bar.querySelector<HTMLElement>('.toast-sub')
+  if (titleEl === null || subEl === null) return
   const name = item.title === '' ? '未命名会话' : item.title
-  const what = item.kind === 'approval' ? '有权限申请待处理'
-    : item.kind === 'plan-review' ? '有计划待审' : '有提问待回答'
-  text.textContent = `${name} ${what}`
-  hint.textContent = items.length > 1 ? `还有 ${items.length - 1} 条` : '查看'
+  const what = item.kind === 'approval' ? '有权限申请待处理，点击查看…'
+    : item.kind === 'plan-review' ? '有计划待审，点击查看…' : '有提问待回答，点击查看…'
+  titleEl.textContent = name
+  subEl.textContent = what
   bar.setAttribute('data-visible', 'true')
 }
 
@@ -1143,8 +1118,8 @@ async function pollHostApprovals(): Promise<void> {
   updatePendingBanner()
 }
 
-/** 安装横幅（apply 调用）：启动轮询 + 可见性刷新。open 为 undefined 时
- *  跳转不可用（sessions 服务缺失），点击横幅只展开详情并提示手动切换。 */
+/** 安装卡片（apply 调用）：启动轮询 + 可见性刷新。open 为 undefined 时
+ *  跳转不可用（sessions 服务缺失），点击卡片提示手动切换。 */
 function installPendingBanner(open: ((sessionId: string) => void) | undefined): void {
   openSession = open
   void pollHostApprovals()

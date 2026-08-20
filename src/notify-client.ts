@@ -124,6 +124,23 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
   // → host subscriptions.json 恒空 → 页面关闭/被杀后无任何推送。
   // 修复：抽成 ensureSubscription()，权限授权成功与页面重新可见时都会重试
   // （getSubscription 幂等，成功即停；限次防抖）。
+  // 诊断上报（2026-08-20 加）：iOS 真机无 console，把权限链路状态 POST 到
+  // host /diag-log，服务器侧查 GET /diag 定位"弹窗不出现/订阅不建立"。
+  let lastDiagAt = 0
+  const reportDiag = (msg: string): void => {
+    const now = Date.now()
+    if (now - lastDiagAt < 3000) return // 防抖：重试/可见性高频场景不刷屏
+    lastDiagAt = now
+    try {
+      void fetch('/plugins/meow-smooth/diag-log', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ msg }),
+      }).catch(() => { /* 诊断上报失败静默 */ })
+    } catch {
+      // 诊断上报失败静默
+    }
+  }
   const pushSupported = 'serviceWorker' in navigator && window.isSecureContext
     && typeof navigator.serviceWorker.register === 'function'
     && typeof Notification !== 'undefined'
@@ -131,7 +148,10 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
   const MAX_SUBSCRIBE_RETRIES = 5
 
   const ensureSubscription = async (): Promise<void> => {
-    if (!pushSupported || Notification.permission !== 'granted') return
+    if (!pushSupported || Notification.permission !== 'granted') {
+      reportDiag(`sub-skip perm=${typeof Notification === 'undefined' ? 'no-Notification' : Notification.permission}`)
+      return
+    }
     if (subscribeRetries >= MAX_SUBSCRIBE_RETRIES) return
     subscribeRetries += 1
     try {
@@ -139,9 +159,12 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
       const existing = await registration.pushManager.getSubscription()
       const subscription = existing ?? await (async () => {
         const res = await fetch('/plugins/meow-smooth/push-config', { cache: 'no-store' })
-        if (!res.ok) return null
+        if (!res.ok) { reportDiag('sub-config-http-err'); return null }
         const data = await res.json() as { enabled?: boolean; publicKey?: string }
-        if (data.enabled !== true || typeof data.publicKey !== 'string') return null
+        if (data.enabled !== true || typeof data.publicKey !== 'string') {
+          reportDiag(`sub-config-bad enabled=${data.enabled} key=${typeof data.publicKey}`)
+          return null
+        }
         return registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(data.publicKey),
@@ -153,9 +176,13 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(subscription.toJSON()),
         })
+        reportDiag(existing !== null ? 'sub-existed-report-ok' : 'sub-subscribed-report-ok')
         subscribeRetries = MAX_SUBSCRIBE_RETRIES // 上报成功即停
+      } else {
+        reportDiag('sub-null (no subscription produced)')
       }
-    } catch {
+    } catch (error) {
+      reportDiag(`sub-error ${error instanceof Error ? error.message.slice(0, 120) : String(error).slice(0, 120)}`)
       // SW/订阅失败（权限拒绝、无推送服务等）静默：页面内通知兜底。
     }
   }
@@ -166,7 +193,9 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
     if (typeof Notification === 'undefined' || Notification.permission !== 'default') return
     document.removeEventListener('pointerdown', requestPermissionOnGesture, { capture: true })
     document.removeEventListener('keydown', requestPermissionOnGesture, { capture: true })
+    reportDiag('request-permission-called')
     void Notification.requestPermission().then((permission) => {
+      reportDiag(`perm-result ${permission}`)
       if (permission === 'granted') void ensureSubscription()
     }).catch(() => { /* 拒绝/异常：横幅兜底 */ })
   }
@@ -174,10 +203,14 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
   document.addEventListener('keydown', requestPermissionOnGesture, { capture: true })
 
   if (pushSupported) {
+    reportDiag(`boot perm=${Notification.permission} secure=${window.isSecureContext} sw=yes`)
     void ensureSubscription()
     // 页面重新可见时补订阅（PWA 后台回来 / 权限在别处打开后再回来）。
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') void ensureSubscription()
+      if (document.visibilityState === 'visible') {
+        reportDiag(`visible perm=${Notification.permission}`)
+        void ensureSubscription()
+      }
     })
     // SW notificationclick 的跳转指令（点通知 → 直达目标会话）。
     navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {

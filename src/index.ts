@@ -44,6 +44,9 @@ interface PendingQuestionView {
   planReview: boolean
   /** host 重启后从审计恢复的项：apiproxy 已无对应 rpcId，无法应答。 */
   orphan: boolean
+  /** 会话标题（折叠 session/title 事件；client 快照标题缺失时兜底，
+   *  修手机端"未命名会话"显示问题）。 */
+  title?: string
 }
 
 import { installNotifyHost } from './notify-host.ts'
@@ -150,6 +153,24 @@ export function apply(ctx: any, config?: Config): void {
     }
   }
 
+  /** 折叠会话标题：审计流 session/title 事件 last-wins（与官方
+   *  foldSessionTitle 同语义；未命名返回空，由客户端兜底文案显示）。 */
+  const sessionTitleOf = (session: any): string => {
+    try {
+      const events: unknown[] | undefined = session?.events
+      if (!Array.isArray(events)) return ''
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const event = events[i] as { type?: string; data?: { title?: unknown } } | undefined
+        if (event?.type === 'session/title' && typeof event.data?.title === 'string' && event.data.title !== '') {
+          return event.data.title
+        }
+      }
+    } catch {
+      // 标题折叠失败返回空（未命名兜底）。
+    }
+    return ''
+  }
+
   // --- 审计投影 ---
   const onEvent = (session: any, event: any): void => {
     try {
@@ -191,6 +212,7 @@ export function apply(ctx: any, config?: Config): void {
           askedAt: Date.now(),
           planReview: planReviewOf(data?.arguments),
           orphan: false,
+          ...(sessionTitleOf(session) !== '' ? { title: sessionTitleOf(session) } : {}),
         })
       } else if (event?.type === 'tool/result') {
         // 配对字段：tool/result 的 callId 在 message.source.callId（core
@@ -251,6 +273,7 @@ export function apply(ctx: any, config?: Config): void {
             askedAt: Date.now(),
             planReview: planReviewOf(event.data?.arguments),
             orphan: true,
+            ...(sessionTitleOf(session) !== '' ? { title: sessionTitleOf(session) } : {}),
           })
         }
       }
@@ -309,6 +332,7 @@ export function apply(ctx: any, config?: Config): void {
             planReview: view.planReview,
             askedAt: view.askedAt,
             orphan: view.orphan,
+            ...(view.title !== undefined ? { title: view.title } : {}),
           }))
           res.writeHead(200, {
             'content-type': 'application/json; charset=utf-8',

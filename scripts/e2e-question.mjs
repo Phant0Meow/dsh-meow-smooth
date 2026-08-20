@@ -67,7 +67,13 @@ const hostPending = async () => {
 const barTextOf = () => evalJs(`(() => {
   const el = document.querySelector('[data-meow-smooth-pending]')
   if (!el || el.getAttribute('data-visible') !== 'true') return ''
-  return (el.querySelector('.text')?.textContent ?? '') + '|' + (el.querySelector('.hint')?.textContent ?? '')
+  return (el.querySelector('.toast-title')?.textContent ?? '') + '|' + (el.querySelector('.toast-sub')?.textContent ?? '')
+})()`)
+const toastClick = () => evalJs(`(() => {
+  const el = document.querySelector('[data-meow-smooth-pending]')
+  if (!el) return false
+  el.click()
+  return true
 })()`)
 
 // 0. 插件注入。
@@ -149,12 +155,12 @@ const panelKeyOf = () => evalJs(`(() => {
   const el = document.querySelector('[data-question-key], [data-plan-review-key]')
   return el ? (el.getAttribute('data-question-key') ?? el.getAttribute('data-plan-review-key')) : ''
 })()`)
-const barDetailOf = () => evalJs(`(() => {
+const barFailOf = () => evalJs(`(() => {
   const bar = document.querySelector('[data-meow-smooth-pending]')
-  return bar?.querySelector('.detail')?.textContent ?? ''
+  return bar?.getAttribute('data-mode') === 'fail' ? (bar.querySelector('.toast-fail')?.textContent ?? '') : ''
 })()`)
 
-await evalJs(`document.querySelector('[data-meow-smooth-pending] .row')?.click()`)
+await toastClick()
 let jumped = false
 let reloaded = false
 try {
@@ -181,7 +187,7 @@ try {
         .map(el => el.textContent.trim()).slice(0, 20) : []
       return {
         barVisible: bar?.getAttribute('data-visible') ?? null,
-        barText: bar?.querySelector('.text')?.textContent ?? '',
+        barText: bar?.querySelector('.toast-title')?.textContent ?? '',
         panel: panel ? 'yes' : 'no',
         sidebarTexts: texts,
       }
@@ -190,7 +196,7 @@ try {
     if (afterReload.panel === 'yes') {
       reloaded = true
     } else if (afterReload.barVisible === 'true') {
-      await evalJs(`document.querySelector('[data-meow-smooth-pending] .row')?.click()`)
+      await toastClick()
       try {
         await poll(panelKeyOf, 20000, 'panel after reload+jump')
         reloaded = true
