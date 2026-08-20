@@ -1,4 +1,4 @@
-# meow-smooth 喵丝滑——手机端远程使用dsh，躺着coding，刷b站coding
+# dsh-meow-smooth 喵丝滑——手机端远程使用dsh，躺着coding，刷b站coding
 
 dsh（DeepSeek Harness）前端体验增强插件，**零 dsh 本体改动**，纯客户端自包含。
 装上之后，dsh 在手机上像原生 App 一样好摸，在电脑上也有更舒服的小细节。
@@ -12,6 +12,8 @@ tailscale实现手机端远程连接dsh（插件包含tailscale配置踩坑指�
 还有一些ui交互方面的细节优化。
 
 作者自己在用，亲测好用，非常提高幸福感。
+
+dsh-meow-smooth：
 
 <img width="906" height="743" alt="image" src="https://github.com/user-attachments/assets/e5bb97b6-051e-45a9-b7a9-8437fe400a4c" />
 
