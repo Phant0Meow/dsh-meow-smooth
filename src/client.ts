@@ -82,6 +82,16 @@
  *     keydown(Ctrl+±0) 的 preventDefault（部分环境/未来版本有效，无效
  *     也无害；只拦 Ctrl 修饰的缩放手势与缩放按键，绝不拦普通滚轮）。
  *     缩放检测提示层已按用户要求移除（"能锁缩放就锁，锁不了也无所谓"）。
+ *
+ * 17. 手机端消息操作行横向滑动：AI 回答下方的 复制/点赞/备注/分支 按钮 +
+ *     时间·用时·首token·吐字速度 统计一行在手机上放不下，原生被祖先
+ *     裁剪看不到尾部统计。把该行自身变成横向滚动容器（滚动条隐藏、
+ *     触屏原生滑动、橡皮筋抑制 JS 自动识别为可滚动祖先），超宽内容
+ *     左右滑着看。锚点=消息容器的 data-time-hover-root 属性 + 行的
+ *     CSS Modules 哈希类名尾缀 [class*='_actions']——属性与 local 名
+ *     稳定、哈希随版本变化也不影响；rc.6（3080）与 rc.2（3081）实测
+ *     结构一致。Tooltip 气泡 position:fixed（无 transformed 祖先时不被
+ *     祖先 overflow 裁剪）、备注弹层 portal 到 body，均不受影响。
  */
 
 import { useEffect } from 'react'
@@ -282,6 +292,25 @@ html[${IME_ROOT_ATTR}] [data-slot="conversation.session.header"] > header {
   }
   [data-slot="conversation.session.header"] > header > div:first-child > div:nth-child(2) {
     margin-left: 10px;
+  }
+  /* 消息操作行横向滑动（需求 17）：复制/点赞/备注/分支按钮 + 时间·用时·
+     首token·吐字速度统计在手机上一行放不下，原生被祖先裁剪。把行自身
+     变成横向滚动容器：max-width 钳回容器宽（用户行 align-items:flex-end
+     下行宽随内容、超宽时向左溢出），内容原样排开、超宽部分左右滑。
+     锚点=容器 data-time-hover-root（官方只在用户行/turn-tail 根两处使用）
+     的直接子级 [class*='_actions']（MessageIconActions 的 [hash]_actions，
+     哈希前缀随版本变、_actions 尾缀不变；直接子级限定避免误伤页面其他
+     模块的 *_actions）。滚动条隐藏 + 触屏惯性滚动；橡皮筋抑制 JS 按计算
+     样式自动把该行识别为可滚动祖先（到边界才拦），无需额外配合。 */
+  [data-time-hover-root] > [class*='_actions'] {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  [data-time-hover-root] > [class*='_actions']::-webkit-scrollbar {
+    display: none;
   }
   /* 手机端禁用橡皮筋回弹（app 化观感）：overscroll-behavior 拦文档级
      与链式回弹（现代 Chrome/Safari 16+，含安卓下拉刷新）；旧 iOS 由
@@ -1220,6 +1249,16 @@ export const inject = ['slots', 'layout', 'sessions']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
+  // UI 注入开关（2026-08-20 为"录优化前原生界面素材"加，轻量 URL 方案）：
+  // URL 带 ?meow-smooth-ui=off 时跳过全部 UI 注入（CSS/锁缩放/设置改造/事件
+  // 委托/横幅/通知 client 桥），界面完全原生；host 侧压缩代理/审计投影/pending
+  // 路由不受影响（手机 HTTPS 入口仍由 8445 代理提供服务，无需重启 3080）。
+  // 录原生素材：手机访问 https://node.tailf4760e.ts.net/?meow-smooth-ui=off
+  // 恢复优化版：去掉 query 刷新即可。
+  if (new URLSearchParams(window.location.search).get('meow-smooth-ui') === 'off') {
+    console.log('[meow-smooth] UI injection OFF (meow-smooth-ui=off) — native UI only')
+    return
+  }
   // CSS 常驻全局（折叠由 data 属性驱动，规则在即生效）。
   const style = document.createElement('style')
   style.dataset.meowFoldCss = 'true'

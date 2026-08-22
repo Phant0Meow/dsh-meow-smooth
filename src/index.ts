@@ -56,10 +56,11 @@ import { startCompressProxy, resolveTargetPort } from './compress-proxy.ts'
 export const name = 'meow-smooth'
 
 /** 必需服务声明：sessions 由 client-runtime 提供（dsh-femwa 同款声明）。
- *  实测：inject 非空时 ctx.get 才能命中服务 store（空数组/无 inject 的
- *  fiber 拿不到 webServer/sessions——cordis 装配形态差异）。webServer
- *  保持 ctx.get 动态获取（可选，未注册时降级）。 */
-export const inject = ['sessions']
+ *  webServer 必须显式声明（2026-08-20 实测）：rc.6 的 include 装配下
+ *  ctx.get('webServer') 对未声明服务返回 undefined → 路由静默跳过
+ *  （/pending 404；崩溃重启后 3080 复现）；声明后走属性访问，与
+ *  dsh-super-injector 同款可靠路径。3081（新版 cordis）双路径均可用。 */
+export const inject = ['sessions', 'webServer']
 
 /** 插件配置（cordis.patch.yml 可覆盖；通知模块消费 longTaskToolCalls 与
  *  vapid keys，其余字段兼容既有配置）。 */
@@ -94,7 +95,13 @@ export interface Config extends Record<string, any> {
 export function apply(ctx: any, config?: Config): void {
   // cordis 严格模式：ctx.<service> 属性必须经 inject 声明；可选服务用
   // ctx.get(name) 读全局 store（未注册返回 undefined → 对应能力降级）。
-  const webServer = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
+  // rc.6 include 装配下 ctx.get 不命中未声明服务（实测 404）→ 先试
+  // 属性访问（inject 已声明），再回退 ctx.get；两版 cordis 都兼容。
+  let webServer: unknown
+  try { webServer = ctx.webServer } catch { webServer = undefined }
+  if (webServer === undefined && typeof ctx.get === 'function') {
+    try { webServer = ctx.get('webServer') } catch { webServer = undefined }
+  }
   const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : undefined
   // 通知模块（需求 15）：长任务完成队列 + PWA 资源 + Web Push 推送器。
   const notify = installNotifyHost(ctx, config)

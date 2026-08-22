@@ -321,9 +321,10 @@ interface WebPushMod {
 
   /** 页面聚焦感知：client 轮询 /pending 时带 x-meow-focus 头（1=页面
    *  聚焦）。按 Host 记录（localhost 与 127.0.0.1 是不同 origin，各自
-   *  上报；SW 层无法跨 origin 感知，host 层统一判定）。聚焦窗口 8s 内
-   *  抑制 Web Push（用户在 DSH 页面时卡片气泡负责提醒，不弹系统通知）。 */
-  const FOCUS_WINDOW_MS = 8000
+   *  上报；SW 层无法跨 origin 感知，host 层统一判定）。聚焦窗口 3s 内
+   *  抑制 Web Push（用户在 DSH 页面时卡片气泡负责提醒，不弹系统通知；
+   *  2026-08-20 用户拍板：8s→3s，8s 会吞掉切走后到达的通知）。 */
+  const FOCUS_WINDOW_MS = 3000
   const focusedByHost = new Map<string, number>()
   const noteFocus = (host: string | undefined, focused: boolean): void => {
     if (typeof host !== 'string' || host === '') return
@@ -459,7 +460,10 @@ const pushOnce = (key: string, fn: () => void): void => {
               kind: 'question',
               title: title === '' ? '未命名会话' : title,
               body: '有提问待回答，点击查看…',
-              tag: `q:${sessionId}:${callId}`,
+              // tag 与 client 页面内通知统一（q:<sessionId>:question）：
+              // 2026-08-20 修双弹——此前 q:<sessionId>:<callId> 与页面内
+              // 通知 tag 不同，同一提问 SW 与页面内各弹一条不合并。
+              tag: `q:${sessionId}:question`,
               sessionId,
             }
             pushOnce(`q:${sessionId}:${callId}`, () => { void deliver(payload) })
@@ -500,7 +504,13 @@ const pushOnce = (key: string, fn: () => void): void => {
   const icon512 = iconPng(512)
   const sw = swSource()
   const manifest = manifestSource()
-  const webServer = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined
+  // rc.6 include 装配下 ctx.get 不命中未声明服务（实测 404）→ 先试
+  // 属性访问（inject 已声明 webServer），再回退 ctx.get；两版 cordis 兼容。
+  let webServer: unknown
+  try { webServer = ctx.webServer } catch { webServer = undefined }
+  if (webServer === undefined && typeof ctx.get === 'function') {
+    try { webServer = ctx.get('webServer') } catch { webServer = undefined }
+  }
   if (webServer !== undefined && typeof webServer.register === 'function') {
     const routes: { kind: 'exact'; path: string; handler: (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string | Buffer) => void }) => void }[] = [
       {
