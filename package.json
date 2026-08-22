@@ -1,6 +1,10 @@
 {
   "name": "meow-smooth",
-  "version": "0.2.0",
+  "version": "0.2.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Phant0Meow/dsh-meow-smooth.git"
+  },
   "description": "喵丝滑：dsh 前端行为增强——输入框失焦折叠高度 + 窄屏选中 Session 自动收起侧边栏（纯 client 插件，零 dsh 本体改动）",
   "keywords": [
     "deepseek-harness",
