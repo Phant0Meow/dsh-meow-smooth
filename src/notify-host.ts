@@ -1,16 +1,22 @@
 /**
- * meow-smooth — 通知 host 模块（需求 15：权限申请 / 提问 / 长任务完成通知）。
+ * meow-smooth — 通知 host 模块（需求 15：权限申请 / 提问 / 长任务完成通知；
+ * 2026-08-22 增加运行失败通知）。
  *
  * 职责（零 dsh 本体改动，全部走官方扩展点）：
  *  1. 长任务完成事件：session/event 审计流里 turn/start + tool/call 计数，
  *     turn/end 且工具调用 ≥ 阈值（Config.longTaskToolCalls，默认 7）→ 完成
  *     事件入队（内存，TTL 10 分钟 / cap 20），供 /pending 路由返回
  *     （index.ts 合并进 JSON）→ client 轮询拉取。
- *  2. PWA 资源路由：manifest.json / icon PNG（zlib 手写渐变）/ sw.js
+ *  2. 运行失败事件：turn/end 的 reason.kind=error（dsh 语义：重试耗尽或不
+ *     可重试的最终失败——单步内自动重试只追加 llm/retry、不关回合，因此
+ *     每个失败回合恰好一条，重试链不会轰炸；aborted/blocked/max-tokens/
+ *     interrupted 等非错误终结不通知）→ 同一队列入队 kind:'failed' + 推送，
+ *     与长任务完成共用 /pending 下发与去重管道。
+ *  3. PWA 资源路由：manifest.json / icon PNG（zlib 手写渐变）/ sw.js
  *     （薄 SW：push → showNotification，notificationclick → 聚焦/打开窗口 +
  *     postMessage 跳转会话；`Service-Worker-Allowed: /` 头放开 scope）——
  *     iOS PWA（添加到主屏幕）与浏览器关闭场景的离线通知通道。
- *  3. Web Push 推送器：审批/提问/完成事件 → web-push 发送（VAPID 签名 +
+ *  4. Web Push 推送器：审批/提问/完成/失败事件 → web-push 发送（VAPID 签名 +
  *     payload 加密）；404/410 清理失效订阅。VAPID keys 与订阅持久化到
  *     $DSH_HOME/.meow-smooth/（JSON 文件——重启后 VAPID 不变，订阅仍有效）。
  *
@@ -22,18 +28,25 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-/** 一条长任务完成事件（/pending 路由 events 段的 wire 形状）。 */
+/** 一条长任务完成/运行失败事件（/pending 路由 events 段的 wire 形状）。 */
 export interface CompletionEvent {
-  /** 稳定去重 id：`sessionId:turn`（client 用 localStorage 记录已通知）。 */
+  /** 稳定去重 id：完成=`sessionId:turn`，失败=`sessionId:turn:error`（client
+   *  用 localStorage 记录已通知）。 */
   id: string
   sessionId: string
   toolCalls: number
   at: number
+  /** 事件类型：缺省=长任务完成（旧客户端兼容）；'failed'=回合因错误中断。 */
+  kind?: 'completed' | 'failed'
+  /** failed 专有：失败摘要（LlmFailure.message 截断到 120 字符）。 */
+  message?: string
+  /** failed 专有：失败码（如 PI_AI_ERROR；未知错误为 UNKNOWN）。 */
+  code?: string
 }
 
 /** 推送载荷（SW 端透传 showNotification 参数）。 */
 interface PushPayload {
-  kind: 'approval' | 'question' | 'completed'
+  kind: 'approval' | 'question' | 'completed' | 'failed'
   title: string
   body: string
   tag: string
@@ -471,6 +484,42 @@ const pushOnce = (key: string, fn: () => void): void => {
           return
         }
         if (event?.type === 'turn/end') {
+          // 运行失败通知（2026-08-22）：reason.kind=error 是 dsh 语义下的
+          // 最终失败（重试耗尽/不可重试；单步内自动重试不关回合）。判定
+          // 必须在 turnCalls 查找之前——插件热重载/中途装配后没有该回合
+          // 的计数，失败照样要通知。aborted/blocked/max-tokens/interrupted
+          // （用户取消/暂停/截断/崩溃修复标记）不算失败，不通知。
+          const reason = data?.reason as
+            | { kind?: unknown; error?: { message?: unknown; code?: unknown } }
+            | undefined
+          if (reason?.kind === 'error') {
+            const turn = typeof data?.turn === 'number' ? data.turn : 0
+            const rawMessage = typeof reason.error?.message === 'string' ? reason.error.message : ''
+            const code = typeof reason.error?.code === 'string' ? reason.error.code : ''
+            const item: CompletionEvent = {
+              id: `${sessionId}:${turn}:error`,
+              sessionId,
+              toolCalls: 0,
+              at: Date.now(),
+              kind: 'failed',
+              ...(rawMessage !== ''
+                ? { message: rawMessage.length > 120 ? `${rawMessage.slice(0, 120)}…` : rawMessage }
+                : {}),
+              ...(code !== '' ? { code } : {}),
+            }
+            completions.push(item)
+            if (completions.length > EVENTS_CAP) completions.shift()
+            const title = sessionTitle(sessionId)
+            const payload: PushPayload = {
+              kind: 'failed',
+              title: title === '' ? '未命名会话' : title,
+              body: item.message !== undefined ? `运行失败：${item.message}` : 'AI 回合因错误中断，点击查看…',
+              tag: `f:${item.id}`,
+              sessionId,
+            }
+            pushOnce(`f:${item.id}`, () => { void deliver(payload) })
+            return
+          }
           const current = turnCalls.get(sessionId)
           if (current === undefined) return
           turnCalls.delete(sessionId)

@@ -73,8 +73,15 @@
  *     触屏点卡片外 click 兜底折叠（iOS/Android 点空白可能不移焦）。
  *
  * 14. 手机端禁用橡皮筋回弹：overscroll-behavior:none（html/body 与
- *     [data-slot="root"] 全树）+ JS touchmove 边界兜底（旧 iOS/安卓）：
- *     可滚动容器内正常滚动、到边界即拦，页面整体稳定如原生 app。
+ *     [data-slot="root"] 全树）+ JS touchmove 边界兜底（旧 iOS/安卓）。
+ *     v2 链式判定（2026-08-22 表格竖滑修复）：收集全部可滚动祖先（含
+ *     scrollingElement），链上任一环节能消费手势方向就放行原生滚动，
+ *     全部到边界才拦——旧版只认"最近一个"可滚祖先且排除 body/html，起点
+ *     落在静止态 overflow-x:hidden 的宽表/代码块等 x 向容器里时竖滑被吞。
+ *
+ * 17.1 触屏宽表常开横滑：本体宽表静止态 overflow-x:hidden（桌面悬停才显
+ *     滚动条的美学），触屏无 hover → 宽表在手机上无法横向滑动看右侧列；
+ *     @media (hover: none) 强制 .md-table-wide 常开 overflow-x:auto。
  *
  * 15. 电脑端尽力拦截页面缩放：桌面浏览器（Chrome/Edge/Firefox/Safari）
  *     的 Ctrl+滚轮 / 触控板捏合 / Ctrl+±/Ctrl+0 页面缩放是浏览器级行为，
@@ -325,6 +332,18 @@ html[${IME_ROOT_ATTR}] [data-slot="conversation.session.header"] > header {
 /* 防双击缩放（触屏双击放大页面）；捏合另由 viewport meta + gesture
    事件拦截（Chrome 安卓会忽略 user-scalable，此为尽力而为）。 */
 html, body { touch-action: manipulation; }
+/* 触屏设备宽表常开横向滚动（2026-08-22 表格竖滑修复的另一半）：本体的
+   宽表（md-table-wide，≥4 列）静止态 overflow-x:hidden、悬停才变 auto——
+   桌面"悬停才显滚动条"的美学，触屏没有 hover，结果是宽表在手机上完全
+   无法横向滑动看右边的列。这里用本体文档承诺的稳定全局钩子强制常开
+   （触屏是覆盖式滚动条，常开没有视觉代价）；桌面（有 hover）不动。
+   !important 压过官方 (0,2,0) 的 module 类+全局类组合规则。 */
+@media (hover: none) {
+  .md-table-wide {
+    overflow-x: auto !important;
+    padding-bottom: 0 !important;
+  }
+}
 /* 审批/提问提醒卡片（需求 12/13，v2：系统通知样式的圆角卡片，替代全宽
    横条）：fixed 顶部居中、圆角、下滑弹出动画；整卡可点（点击进入目标
    会话）、上滑手势隐藏。纯通知——回答永远在官方面板，卡片不做输入。
@@ -495,15 +514,26 @@ function syncHeaderMenu(): void {
 /** 橡皮筋抑制：最近触点坐标（touchstart 初始化，防首个 touchmove 伪位移）。 */
 let lastTouchX = 0
 let lastTouchY = 0
-/** 橡皮筋抑制：本次手势最近的可滚动祖先（touchstart 定位，touchmove
- *  只做边界判定，避免每帧 getComputedStyle 走树）。 */
-let overscrollNode: HTMLElement | null = null
+/** 橡皮筋抑制：本次手势的可滚动祖先链（touchstart 收集，近→远排序；
+ *  touchmove 只做边界判定，避免每帧 getComputedStyle 走树）。
+ *
+ *  v2（2026-08-22 表格竖滑修复）：旧实现只取"最近一个"可滚动祖先，且把
+ *  body/html 排除在外——两个洞：①起点落在静止态 overflow-x:hidden 的宽表
+ *  包装层（本体桌面美学：悬停才显横滚条，触屏无 hover）里时，包装层不算
+ *  可滚动、更外层的会话滚动容器又不在判定范围 → 链上"没有"可滚节点 →
+ *  所有 touchmove 被无脑 preventDefault，页面竖滑被吞（代码块等 x 向滚动
+ *  容器同理误伤）；②即使命中了 x 向滚动容器，竖向滑动它消费不了也不放行
+ *  给外层。新语义=原生滚动链等价物：收集全部可滚动祖先（含文档级
+ *  scrollingElement），touchmove 时链上任一环节能消费该方向位移就放行，
+ *  全部到边界才 preventDefault——页面边缘防回弹（本功能初衷）不变。 */
+let overscrollChain: HTMLElement[] = []
 
-/** touchstart：记录触点 + 定位最近可滚动祖先（overflow auto/scroll 且
- *  确实有溢出）。编辑控件（textarea/input）不参与——iOS 文本选择句柄
- *  拖动依赖原生 touchmove，拦截会弄坏选择。 */
+/** touchstart：记录触点 + 收集可滚动祖先链（overflow auto/scroll 且确实有
+ *  溢出；body/html 本体经 document.scrollingElement 单独兜底——dsh 的滚动
+ *  在容器内一般用不到它，普通整页滚动页面靠它保持行为正确）。编辑控件
+ *  （textarea/input）不参与——iOS 文本选择句柄拖动依赖原生 touchmove。 */
 function onTouchStartOverscroll(event: TouchEvent): void {
-  overscrollNode = null
+  overscrollChain = []
   if (event.touches.length !== 1) return
   const t0 = event.touches[0]
   lastTouchX = t0.clientX
@@ -512,23 +542,27 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   if (!(target instanceof Element)) return
   if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) return
   let node: Element | null = target
-  while (node !== null && node !== document.body && node !== document.documentElement) {
-    const style = getComputedStyle(node)
-    const oy = style.overflowY
-    const ox = style.overflowX
-    const sy = (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1
-    const sx = (ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 1
-    if (sy || sx) {
-      overscrollNode = node as HTMLElement
-      return
+  while (node !== null && node !== document.documentElement) {
+    if (node instanceof HTMLElement) {
+      const style = getComputedStyle(node)
+      const oy = style.overflowY
+      const ox = style.overflowX
+      const sy = (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1
+      const sx = (ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 1
+      if (sy || sx) overscrollChain.push(node)
     }
     node = node.parentElement
   }
+  const scroller = document.scrollingElement
+  if (scroller instanceof HTMLElement && scroller.scrollHeight > scroller.clientHeight + 1) {
+    overscrollChain.push(scroller)
+  }
 }
 
-/** touchmove（passive:false）：可滚动祖先在滑动方向还能滚 → 放行；
- *  已到边界或根本没有可滚动祖先 → preventDefault，阻断滚动链与文档级
- *  橡皮筋。双指（捏合缩放）不干预。 */
+/** touchmove（passive:false）：祖先链上任一可滚动容器在滑动方向还能滚 →
+ *  放行（原生滚动接管，含"内层 x 向容器 + 外层页面 y 向"的链式组合）；
+ *  整条链都已到边界 → preventDefault，阻断文档级橡皮筋。双指不干预。
+ *  链上节点的滚动位置随手势推进变化，每次 move 重算即可自然处理。 */
 function onTouchMoveOverscroll(event: TouchEvent): void {
   if (event.touches.length !== 1) return
   const touch = event.touches[0]
@@ -537,18 +571,15 @@ function onTouchMoveOverscroll(event: TouchEvent): void {
   lastTouchY = touch.clientY
   lastTouchX = touch.clientX
   if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return
-  if (overscrollNode === null) {
-    if (event.cancelable) event.preventDefault()
-    return
+  for (const node of overscrollChain) {
+    const canY = dy !== 0
+      && ((dy < 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1)
+        || (dy > 0 && node.scrollTop > 0))
+    const canX = dx !== 0
+      && ((dx < 0 && node.scrollLeft + node.clientWidth < node.scrollWidth - 1)
+        || (dx > 0 && node.scrollLeft > 0))
+    if (canY || canX) return
   }
-  const node = overscrollNode
-  const canY = dy !== 0
-    && ((dy < 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1)
-      || (dy > 0 && node.scrollTop > 0))
-  const canX = dx !== 0
-    && ((dx < 0 && node.scrollLeft + node.clientWidth < node.scrollWidth - 1)
-      || (dx > 0 && node.scrollLeft > 0))
-  if (canY || canX) return
   if (event.cancelable) event.preventDefault()
 }
 

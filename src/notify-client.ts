@@ -5,7 +5,8 @@
  *  1. 页面内系统通知：首次用户手势请求 Notification 权限；pending 新增且
  *     页面 hidden → 弹通知（approval / question / plan-review）；点击 →
  *     聚焦页面 + 跳转目标会话。页面可见时不弹（横幅/官方面板已在显示）。
- *  2. 长任务完成通知：轮询拉到新完成事件且页面 hidden → 弹通知；
+ *  2. 长任务完成/运行失败通知：轮询拉到新事件且页面 hidden → 弹通知
+ *     （kind 缺省=长任务完成；'failed'=AI 回合因错误中断，2026-08-22 加）；
  *     localStorage 去重（页面重开后，host 队列里未通知过的仍弹一次）。
  *  3. PWA 桥：HTTPS（secure context）下注册 SW + push 订阅上报——
  *     页面关闭 / iOS PWA 后台场景由 SW + Web Push 兜底（host 推送）。
@@ -27,11 +28,15 @@ export interface NotifyItem {
   toolName?: string
 }
 
-/** host /pending 路由返回的完成事件（wire 子集）。 */
+/** host /pending 路由返回的完成/失败事件（wire 子集）。 */
 export interface CompletionEventLike {
   id: string
   sessionId: string
   toolCalls: number
+  /** 'failed'=回合因错误中断；缺省=长任务完成（旧 host 兼容）。 */
+  kind?: string
+  /** failed 专有：失败摘要（host 已截断到 120 字符）。 */
+  message?: string
 }
 
 /** 通知模块依赖（client.ts apply 闭包注入）。 */
@@ -257,6 +262,19 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
         if (notified.has(event.id)) continue
         notified.add(event.id)
         changed = true
+        if (event.kind === 'failed') {
+          // 运行失败通知（2026-08-22）：AI 回合因错误中断（重试耗尽后的
+          // 最终失败，host 侧保证重试链不产生中间事件）。
+          notify(
+            'dsh：本轮运行失败',
+            event.message !== undefined && event.message !== ''
+              ? `运行失败：${event.message}`
+              : 'AI 回合因错误中断，点击查看…',
+            `f:${event.id}`,
+            event.sessionId,
+          )
+          continue
+        }
         notify(
           'dsh：任务完成',
           `长任务完成（${event.toolCalls} 次工具调用）`,
