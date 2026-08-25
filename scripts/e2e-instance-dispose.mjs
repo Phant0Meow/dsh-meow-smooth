@@ -251,7 +251,7 @@ try {
   await sleep(120)
   st = await read()
   check(st.styles === 1, 'B：fold 样式仍唯一（A 的已随协议拆除）', `styles=${st.styles}`)
-  check(st.gestureMark === 'v5.4-client-dispose', '手势构建标记 v5.4-client-dispose', st.gestureMark)
+  check(st.gestureMark === 'v5.5-composer-reveal', '手势构建标记 v5.5-composer-reveal', st.gestureMark)
   // B 的首个 tick 会把 A 留下的"细条在场"折回 0（furl=true）；此后必须恒定。
   const samples = []
   for (let i = 0; i < 9; i++) {

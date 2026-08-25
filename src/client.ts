@@ -559,12 +559,25 @@ function composerCardOf(target: EventTarget | null): HTMLElement | null {
 }
 
 /** 展开卡片（幂等）：移除折叠属性 + 恢复滚动位置 + 清除动态 1 行高
- *  （回到 CSS 变量默认，避免旧主题残留）。 */
-function expandCard(card: HTMLElement): void {
+ *  （回到 CSS 变量默认，避免旧主题残留）。instant=true 时跳过 150ms
+ *  过渡直接到位——聚焦路径专用：浏览器/iOS 的"聚焦上滚/键盘让位 pan"
+ *  按【聚焦瞬间】的盒子几何判定是否滚动，过渡中的半高盒子会被判成
+ *  "已可见"而放弃滚动，等长高后底部就压在键盘下（2026-08-26 猫猫报
+ *  "重新展开有时被输入法遮挡"的根因之一）。瞬时展开让聚焦瞬间的几何
+ *  = 终态几何，原生 reveal 判定必然正确。 */
+function expandCard(card: HTMLElement, instant = false): void {
   if (card.getAttribute(FOLD_ATTR) !== FOLD_COLLAPSED) return
   card.removeAttribute(FOLD_ATTR)
   card.style.removeProperty('--meow-smooth-one-line')
   const scroll = card.querySelector<HTMLElement>('[data-input-scroll]')
+  if (instant && scroll !== null) {
+    // 抑制本帧起的过渡：inline 覆盖 CSS transition，双 rAF 后恢复
+    // （rAF1=样式已提交，rAF2=下一帧起恢复正常动画节奏）。
+    scroll.style.transition = 'none'
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => { scroll.style.transition = '' })
+    })
+  }
   if (scroll !== null) {
     const saved = scrollTops.get(scroll)
     if (saved !== undefined) {
@@ -876,6 +889,51 @@ function syncIme(): void {
   }
 }
 
+/** 聚焦展开后的可视性修正兜底：键盘就位后若 textarea 底部仍在可视视口
+ *  下方（键盘上缘之下），把可纵向滚动的祖先链向上滚、内层优先分配——
+ *  覆盖"会话页聊天记录长、scrollBody 有余量"的场景。新会话页壳无任何
+ *  有余量的滚动祖先（实测），那时只能依赖原生聚焦 reveal（配合瞬时
+ *  展开保证几何正确）。幂等：修正完成后 needed≤0 自然不再写。
+ *  只在 composer textarea 持焦时动作；visualViewport 缺席直接放弃。 */
+function ensureComposerVisible(): void {
+  const active = document.activeElement
+  if (!(active instanceof HTMLTextAreaElement)) return
+  if (composerCardOf(active) === null) return
+  const vv = window.visualViewport
+  if (vv === null || vv.height === 0) return
+  const rect = active.getBoundingClientRect()
+  // 键盘上缘（布局视口坐标）≈ visualViewport 底边；底部超出即被遮。
+  let needed = Math.ceil(rect.bottom - (vv.offsetTop + vv.height)) + 8 // 8px 呼吸边距
+  if (needed <= 0) return
+  const chain: HTMLElement[] = []
+  let node: Element | null = active.parentElement
+  while (node !== null && node !== document.documentElement) {
+    if (node instanceof HTMLElement) {
+      const oy = getComputedStyle(node).overflowY
+      if ((oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1) chain.push(node)
+    }
+    node = node.parentElement
+  }
+  const se = document.scrollingElement
+  if (se instanceof HTMLElement && se.scrollHeight > se.clientHeight + 1) chain.push(se)
+  for (const box of chain) {
+    if (needed <= 0) break
+    const room = box.scrollHeight - box.clientHeight - box.scrollTop
+    if (room <= 0) continue
+    const take = Math.min(needed, room)
+    box.scrollTop += take
+    needed -= take
+  }
+}
+
+/** 键盘动画期间的重试调度：iOS 键盘 ~250ms 弹起，visualViewport 连续
+ *  变化，展开过渡也要 150ms——单次修正在中间态会算错几何。180/380ms
+ *  双采样基本覆盖"键盘就位+展开完成"的稳定点（幂等无害多打几次）。 */
+function revealSoon(): void {
+  window.setTimeout(ensureComposerVisible, 180)
+  window.setTimeout(ensureComposerVisible, 380)
+}
+
 /** 焦点进入卡片：若处于折叠态则展开并恢复滚动位置。
  *  焦点已被抑制器撤走（activeElement 不再是 target）时不展开——会话
  *  切换的自动聚焦被拦截后，卡片应保持折叠态（无焦点=无输入意图）。 */
@@ -884,6 +942,7 @@ function onFocusIn(event: FocusEvent): void {
   if (card === null) return
   if (event.target !== document.activeElement) return
   expandCard(card)
+  revealSoon() // 键盘弹起/展开完成后的可视性兜底
   // 触屏键盘的回车键显示为"换行"（配合需求 4：触屏 Enter 插入换行）。
   // 注意：这里不再直接压缩 header——键盘是否弹起由 visualViewport
   // 判定（imeActive），聚焦本身不是键盘信号（外接键盘/不自动弹键盘）。
@@ -948,17 +1007,24 @@ function onModeLabelDismiss(event: MouseEvent): void {
 
 /** 点击卡片任意处兜底展开：聚焦态判定外的补强（手机点输入框区域即展开）。
  *  交互控件（按钮/选择器/菜单项）不抢焦点；非交互区域顺带聚焦 textarea。
- *  同时记录用户主动点击时间戳（syncIme 区分自动聚焦键盘用）。 */
+ *  同时记录用户主动点击时间戳（syncIme 区分自动聚焦键盘用）。
+ *
+ *  展开必须瞬时（instant）：本 handler 之后紧跟 focus——浏览器/iOS 的
+ *  聚焦上滚与键盘让位 pan 按聚焦瞬间的几何判定，过渡中的半高盒子会被
+ *  判成"已可见"而放弃滚动（2026-08-26 猫猫报"重新展开有时被输入法遮挡"
+ *  的主根因）。聚焦也不再 preventScroll：直接点 textarea 的原生路径
+ *  （无 preventScroll）一直正常，这里对齐同一行为。 */
 function onPointerDownCapture(event: PointerEvent): void {
   const card = composerCardOf(event.target)
   if (card === null) return
   lastComposerPointer = Date.now()
-  expandCard(card)
+  expandCard(card, true)
+  revealSoon()
   const target = event.target
   if (!(target instanceof Element)) return
   if (target.closest('button, select, input, textarea, a, [role="menuitem"], [role="menu"]')) return
   const ta = card.querySelector<HTMLTextAreaElement>('textarea')
-  if (ta !== null && !ta.disabled && !ta.readOnly) ta.focus({ preventScroll: true })
+  if (ta !== null && !ta.disabled && !ta.readOnly) ta.focus()
 }
 
 /** 触屏（粗指针）判定：需求 4 只在手机/触屏设备生效，桌面键盘保持 Enter 发送。 */
@@ -1931,7 +1997,10 @@ export function apply(ctx: any): void {
   // 与轮询共用 lastIme）：键盘激活且最近无用户点击输入框（dsh 切换
   // 会话自动聚焦的场景）→ 收起键盘、不显示条——"只在用户激活输入框
   // 时键盘才打开"；打字中（无转换）绝不干预。
-  window.visualViewport?.addEventListener('resize', syncIme)
+  // 键盘动画期间 visualViewport resize 连发：除 IME 同步外顺带做聚焦
+  // 可视性兜底（幂等，仅在输入框被遮时才写滚动）。
+  const onVisualViewportResize = (): void => { syncIme(); ensureComposerVisible() }
+  window.visualViewport?.addEventListener('resize', onVisualViewportResize)
   window.visualViewport?.addEventListener('scroll', pinBar)
   let furlTick = 0
   if (isCoarsePointer()) {
@@ -1940,7 +2009,7 @@ export function apply(ctx: any): void {
     furlTick = window.setInterval(() => { syncIme(); syncSidebarFurl() }, 500)
   }
   disposers.push(() => {
-    window.visualViewport?.removeEventListener('resize', syncIme)
+    window.visualViewport?.removeEventListener('resize', onVisualViewportResize)
     window.visualViewport?.removeEventListener('scroll', pinBar)
     if (furlTick !== 0) window.clearInterval(furlTick)
   })
