@@ -88,7 +88,7 @@ export function installSidebarGesture(deps: GestureDeps): GestureApi {
   // 运行时构建标记（排障用）：页面执行到本函数即可见，用于确认"页面
   // 实际执行的 client.js 是否为本构建"（rev 滞后时静态路由与执行内容
   // 不一致——排障期每次构建必须 bump 标记文本并等精确匹配）。
-  document.documentElement.dataset.meowSmoothGestureLoaded = 'v5.5-composer-reveal'
+  document.documentElement.dataset.meowSmoothGestureLoaded = 'v5.6-foldtrace'
   const w = window as unknown as Record<string, unknown>
   // 旧实例清理：dsh 模块热替换（rev 更新）会执行新脚本，但旧实例挂在
   // document 上的匿名监听器无法自动移除——新旧实例并存时互相污染状态。

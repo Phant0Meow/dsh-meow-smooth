@@ -552,6 +552,67 @@ html[${IME_ROOT_ATTR}] [${FAB_ATTR}] {
 /** 每个滚动窗折叠前的 scrollTop（展开时恢复，防视口错位）。 */
 const scrollTops = new WeakMap<HTMLElement, number>()
 
+// ---- 输入框焦点链路诊断（2026-08-26 猫猫报"输入框卡住：点文字不出光标、
+// 能选择却无法删除修改"——PWA 无 console，环形轨迹 + 关键节点上报 host
+// /diag-log，GET /diag 读回分析。触屏专属；随构建保留为排障句柄。）----
+const foldTrace: string[] = []
+let foldSelLast = ''
+let foldVisLastPost = 0
+declare global {
+  interface Window { __meowFoldTrace?: string[] }
+}
+if (typeof window !== 'undefined') window.__meowFoldTrace = foldTrace
+/** 记一条轨迹。post=true 时同步上报 host（低频关键节点专用；input 等
+ *  高频事件只入环形）。ae=当前 activeElement 标签，len=其 value 长度。 */
+function noteFold(msg: string, post = false): void {
+  try {
+    const ae = document.activeElement
+    const tag = ae instanceof HTMLTextAreaElement ? 'ta' : (ae instanceof HTMLElement ? ae.tagName : 'null')
+    const extra = ae instanceof HTMLTextAreaElement ? ` len=${ae.value.length}` : ''
+    foldTrace.push(`${Date.now() % 100000} ${msg} ae=${tag}${extra}`)
+    if (foldTrace.length > 60) foldTrace.shift()
+  } catch { /* 诊断绝不干扰主流程 */ }
+  if (post) {
+    try {
+      void fetch('/plugins/meow-smooth/diag-log', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ msg: `fold ${msg}` }),
+        keepalive: true,
+      }).catch(() => { /* 离线/代理失败静默 */ })
+    } catch { /* 忽略 */ }
+  }
+}
+/** composer 卡片内 textarea 的编辑流监听（input/beforeinput/selectionchange
+ *  ——高频，只入环形不上报）。apply 注册、disposers 拆除。 */
+function installFoldDiagListeners(): () => void {
+  const onInput = (event: Event): void => {
+    if (!(event.target instanceof HTMLTextAreaElement) || composerCardOf(event.target) === null) return
+    noteFold(`ipt len=${event.target.value.length}`)
+  }
+  const onBeforeInput = (event: Event): void => {
+    if (!(event.target instanceof HTMLTextAreaElement) || composerCardOf(event.target) === null) return
+    noteFold(`bei ${(event as InputEvent).inputType ?? '?'}`)
+  }
+  const onSelectionChange = (): void => {
+    const ae = document.activeElement
+    if (!(ae instanceof HTMLTextAreaElement) || composerCardOf(ae) === null) return
+    const sel = document.getSelection()
+    const type = sel?.type ?? '?'
+    if (type === foldSelLast) return
+    foldSelLast = type
+    noteFold(`sel ${type}`)
+  }
+  document.addEventListener('input', onInput, true)
+  document.addEventListener('beforeinput', onBeforeInput, true)
+  document.addEventListener('selectionchange', onSelectionChange)
+  return (): void => {
+    document.removeEventListener('input', onInput, true)
+    document.removeEventListener('beforeinput', onBeforeInput, true)
+    document.removeEventListener('selectionchange', onSelectionChange)
+  }
+}
+
 /** 事件目标的 composer 卡片（不在卡片内返回 null）。 */
 function composerCardOf(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof Element)) return null
@@ -567,6 +628,7 @@ function composerCardOf(target: EventTarget | null): HTMLElement | null {
  *  = 终态几何，原生 reveal 判定必然正确。 */
 function expandCard(card: HTMLElement, instant = false): void {
   if (card.getAttribute(FOLD_ATTR) !== FOLD_COLLAPSED) return
+  noteFold(`exp${instant ? '!' : ''}`)
   card.removeAttribute(FOLD_ATTR)
   card.style.removeProperty('--meow-smooth-one-line')
   const scroll = card.querySelector<HTMLElement>('[data-input-scroll]')
@@ -609,6 +671,7 @@ function oneLineHeight(scroll: HTMLElement): number {
  *  触屏点卡片外）共用，行为一致。 */
 function collapseCard(card: HTMLElement): void {
   if (card.getAttribute(FOLD_ATTR) === FOLD_COLLAPSED) return
+  noteFold('cld')
   const scroll = card.querySelector<HTMLElement>('[data-input-scroll]')
   if (scroll === null) return
   const one = oneLineHeight(scroll)
@@ -860,6 +923,7 @@ const suppressFocusIn = (event: FocusEvent): void => {
   suppressing = true
   target.blur()
   suppressing = false
+  noteFold('SUPPRESS blur', true)
   supTrace('suppressed programmatic focus')
 }
 
@@ -879,12 +943,15 @@ function syncIme(): void {
     if (Date.now() - lastComposerPointer > 1000) {
       const active = document.activeElement
       if (active instanceof HTMLTextAreaElement && composerCardOf(active) !== null) {
+        noteFold('ime+ autofocused -> blur', true)
         active.blur() // 无用户点击的键盘激活（会话切换自动聚焦）→ 收起
         return // 键盘即将收起，不显示条
       }
     }
+    noteFold('ime+', true)
     setImeState(true)
   } else {
+    noteFold('ime-', true)
     setImeState(false)
   }
 }
@@ -905,6 +972,7 @@ function ensureComposerVisible(): void {
   // 键盘上缘（布局视口坐标）≈ visualViewport 底边；底部超出即被遮。
   let needed = Math.ceil(rect.bottom - (vv.offsetTop + vv.height)) + 8 // 8px 呼吸边距
   if (needed <= 0) return
+  noteFold(`vis need=${needed}`)
   const chain: HTMLElement[] = []
   let node: Element | null = active.parentElement
   while (node !== null && node !== document.documentElement) {
@@ -924,6 +992,11 @@ function ensureComposerVisible(): void {
     box.scrollTop += take
     needed -= take
   }
+  // 上报节流 800ms：键盘动画期 resize 连发，避免刷爆 host 端 100 条环形。
+  if (Date.now() - foldVisLastPost > 800) {
+    foldVisLastPost = Date.now()
+    noteFold(`vis scrolled remain=${needed}`, true)
+  }
 }
 
 /** 键盘动画期间的重试调度：iOS 键盘 ~250ms 弹起，visualViewport 连续
@@ -941,6 +1014,7 @@ function onFocusIn(event: FocusEvent): void {
   const card = composerCardOf(event.target)
   if (card === null) return
   if (event.target !== document.activeElement) return
+  noteFold('fi', true)
   expandCard(card)
   revealSoon() // 键盘弹起/展开完成后的可视性兜底
   // 触屏键盘的回车键显示为"换行"（配合需求 4：触屏 Enter 插入换行）。
@@ -955,6 +1029,7 @@ function onFocusOut(event: FocusEvent): void {
   if (card === null) return
   // 焦点落在卡片内其他控件（模型选择等）不算离开。
   if (composerCardOf(event.relatedTarget) === card) return
+  noteFold('fo', true)
   collapseCard(card)
   // 键盘收起由 visualViewport 恢复触发解除（imeActive），失焦本身不解除
   // （iOS 键盘"完成"键收起时焦点可能仍在输入框）。
@@ -1017,6 +1092,8 @@ function onModeLabelDismiss(event: MouseEvent): void {
 function onPointerDownCapture(event: PointerEvent): void {
   const card = composerCardOf(event.target)
   if (card === null) return
+  const tgt = event.target instanceof Element ? event.target : null
+  noteFold(`pd ${tgt?.closest('textarea') !== null ? 'ta' : 'card'}`, true)
   lastComposerPointer = Date.now()
   expandCard(card, true)
   revealSoon()
@@ -1049,6 +1126,7 @@ function onKeyDownCapture(event: KeyboardEvent): void {
   if (!(target instanceof HTMLTextAreaElement) || target.readOnly || target.disabled) return
   if (composerCardOf(target) === null) return
   if (!isCoarsePointer()) return
+  noteFold('keyEnter', true)
   // 只断官方发送路径，把换行还给浏览器（2026-08-25 v5.3 重写，修"换行
   // 丢失/跳回"）：旧实现 preventDefault + 手动改 DOM value + setSelectionRange
   // + 派发合成 InputEvent——与本体受控层（textarea value={draft}）产生
@@ -1935,6 +2013,9 @@ export function apply(ctx: any): void {
   // 触屏兜底折叠：点卡片外任意处 → 折叠（iOS/Android 点空白可能不移焦，
   // focusout 不触发；click 判定不会误伤滚动）。
   document.addEventListener('click', onDocumentClickCapture, { capture: true })
+  // 输入框焦点链路诊断（2026-08-26 "输入框卡住"bug 排障）：input/
+  // beforeinput/selectionchange 环形记录，随 disposers 拆除。
+  disposers.push(installFoldDiagListeners())
 
   // 模式图标点击展开/收起（需求 4）：capture 先收起别处的，冒泡再切换本尊。
   document.addEventListener('click', onModeLabelDismiss, { capture: true })
