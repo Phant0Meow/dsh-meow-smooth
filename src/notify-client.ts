@@ -51,6 +51,10 @@ export interface NotifyClientHandle {
   onPending(items: NotifyItem[]): void
   /** 轮询响应处理（完成事件通知；approvals 由 onPending 覆盖）。 */
   onPollResult(data: { events?: CompletionEventLike[] }): void
+  /** 拆除本模块注册的全部 document/serviceWorker 监听（client.ts 单实例
+   *  拆除协议登记用：热替换重装时旧实例监听随协议整体清理，否则手势授权/
+   *  可见性补订/SW message 会随安装次数堆积）。 */
+  dispose(): void
 }
 
 const NOTIFIED_LS_KEY = 'meow-smooth:notified-completions'
@@ -207,23 +211,28 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
   document.addEventListener('pointerdown', requestPermissionOnGesture, { capture: true })
   document.addEventListener('keydown', requestPermissionOnGesture, { capture: true })
 
+  // pushSupported 分支内注册的监听（dispose 用；不支持 push 时保持 null）。
+  let onVisibleResubscribe: (() => void) | null = null
+  let onSwMessage: ((event: MessageEvent) => void) | null = null
   if (pushSupported) {
     reportDiag(`boot perm=${Notification.permission} secure=${window.isSecureContext} sw=yes`)
     void ensureSubscription()
     // 页面重新可见时补订阅（PWA 后台回来 / 权限在别处打开后再回来）。
-    document.addEventListener('visibilitychange', () => {
+    onVisibleResubscribe = (): void => {
       if (document.visibilityState === 'visible') {
         reportDiag(`visible perm=${Notification.permission}`)
         void ensureSubscription()
       }
-    })
+    }
+    document.addEventListener('visibilitychange', onVisibleResubscribe)
     // SW notificationclick 的跳转指令（点通知 → 直达目标会话）。
-    navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+    onSwMessage = (event: MessageEvent): void => {
       const data = event.data as { type?: string; sessionId?: string } | null
       if (data?.type === 'meow-smooth:jump' && typeof data.sessionId === 'string') {
         openSession?.(data.sessionId)
       }
-    })
+    }
+    navigator.serviceWorker.addEventListener('message', onSwMessage)
   }
 
   return {
@@ -283,6 +292,16 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
         )
       }
       if (changed) saveNotified(notified)
+    },
+    dispose(): void {
+      document.removeEventListener('pointerdown', requestPermissionOnGesture, { capture: true })
+      document.removeEventListener('keydown', requestPermissionOnGesture, { capture: true })
+      if (onVisibleResubscribe !== null) {
+        document.removeEventListener('visibilitychange', onVisibleResubscribe)
+      }
+      if (onSwMessage !== null) {
+        navigator.serviceWorker?.removeEventListener('message', onSwMessage)
+      }
     },
   }
 }

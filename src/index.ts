@@ -55,6 +55,11 @@ import { startCompressProxy, resolveTargetPort } from './compress-proxy.ts'
 /** 插件名（loader 诊断用；与 cordis.patch.yml 的 name 一致）。 */
 export const name = 'meow-smooth'
 
+/** host 半边功能版本标记（/pending 响应带出，客户端可探测运行实例的
+ *  host 是否含某能力——如失败事件需要 v0.4.0+）。发版时随 package.json
+ *  的 version 一并更新。 */
+export const HOST_VERSION = '0.4.1'
+
 /** 必需服务声明：sessions 由 client-runtime 提供（dsh-femwa 同款声明）。
  *  webServer 必须显式声明（2026-08-20 实测）：rc.6 的 include 装配下
  *  ctx.get('webServer') 对未声明服务返回 undefined → 路由静默跳过
@@ -360,7 +365,7 @@ export function apply(ctx: any, config?: Config): void {
             'content-type': 'application/json; charset=utf-8',
             'cache-control': 'no-store',
           })
-          res.end(JSON.stringify({ approvals, questions, events: notify.completionEvents() }))
+          res.end(JSON.stringify({ hostVersion: HOST_VERSION, approvals, questions, events: notify.completionEvents() }))
         } catch {
           res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
           res.end('{"error":"internal"}')

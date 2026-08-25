@@ -32,7 +32,8 @@ function pickConst(name) {
   return m[1].replaceAll('\\\'', '\'')
 }
 const CONST_NAMES = ['FOLD_ATTR', 'FOLD_COLLAPSED', 'IME_ROOT_ATTR', 'BAR_ATTR',
-  'HEADER_MENU_ATTR', 'FOLDED_MAX_HEIGHT', 'PENDING_BAR_ATTR']
+  'HEADER_MENU_ATTR', 'FOLDED_MAX_HEIGHT', 'PENDING_BAR_ATTR',
+  'FURL_ROOT_ATTR', 'FAB_ATTR']
 const CONSTS = Object.fromEntries(CONST_NAMES.map(n => [n, pickConst(n)]))
 const cssStart = src.indexOf('const FOLD_CSS = `') + 'const FOLD_CSS = `'.length
 const cssEnd = src.indexOf('`', cssStart)

@@ -21,10 +21,10 @@
  *    user-scalable=no、CSS touch-action: manipulation（防双击缩放）、
  *    iOS gesture 事件拦截（防捏合）。
  *
- * 4. 手机端输入框换行：粗指针（触屏）设备上 Enter 不再发送，capture 阶段
- *    拦截（早于 React onKeyDown）插入换行并派发 input 事件让受控层感知；
- *    Shift/Ctrl/Alt/Meta+Enter 与 IME 选词（isComposing/keyCode 229）
- *    不受影响。
+ * 4. 手机端输入框换行：粗指针（触屏）设备上 Enter 不再发送——capture
+ *    阶段只 stopPropagation 断掉官方 keydown→submit 路径，默认行为留给
+ *    浏览器原生插入换行（v5.3 重写：旧版手动改 DOM+合成事件与受控层
+ *    竞争，造成换行丢失/跳回）；Shift/修饰键与 IME 选词不受影响。
  *
  * 5. 窄屏选中会话自动收起侧边栏：视口宽度 < 1024px（dsh 布局契约
  *    SIDEBAR_AUTO_COLLAPSE）时，切换 Session 后自动把侧边栏收成 rail。
@@ -99,11 +99,46 @@
  *     稳定、哈希随版本变化也不影响；rc.6（3080）与 rc.2（3081）实测
  *     结构一致。Tooltip 气泡 position:fixed（无 transformed 祖先时不被
  *     祖先 overflow 裁剪）、备注弹层 portal 到 body，均不受影响。
+ *
+ * 18. 手机端竖条折叠为小方块（v3 原生切片重绘，2026-08-23 猫猫拍板）：
+ *     收起状态的 56px 细竖条对寸土寸金的手机屏还是太宽——把整条竖条
+ *     向上"折叠"成左上角一小块：原竖条宽度 56px、竖条同款底色、右缘
+ *     同款灰色竖线（原生 sidebarCol 的分隔线），鱼 logo 待在原生几何
+ *     位置——看起来就像竖条只在 Header 区存在、不往下延伸（v2 的贴角
+ *     圆角标签被否："有点丑"）。会话 header 整体打 margin-left: 56px
+ *     （标题/标签行/动作按钮随盒模型右移），与原生收起态逐像素对齐——
+ *     纯 CSS 零测量（header 原生 padding 左右不对称且 furl 后计算值被
+ *     污染，实测不可靠）。**色块与 header 同进退**（猫猫要求"始终跟
+ *     Header 在一起"）：header 被隐藏（打字 IME 态由 html[ime] 规则即时
+ *     同步 + tick 轮询按 computed display 打标记兜住任何其他隐藏来源）
+ *     → 色块同步退场；header 显示 → 回归。新会话页空壳 header 不算隐藏
+ *     （色块是那里唯一的侧边栏入口）。高度=header 实高（JS 实测，空壳
+ *     时兜底 56）。两态流转：
+ *     折叠（默认，只有小方块）→ 点小方块直接展开完整侧边栏；选会话/
+ *     点边栏外收起后自动折回。展开时侧边栏内容叠一个"从上向下揭开"
+ *     的辅助动画（translateY+fade），列滑出仍是本体自带的 grid 过渡。
+ *     自适应切换（猫猫定稿）：竖条底部无插件按钮 → 两态（小方块 ⇄ 展开）；
+ *     有插件按钮 → 三态：默认仍是折叠全屏文字，按小方块唤出细竖条（插件
+ *     按钮可达）→ 按竖条顶部原生 toggle 展开 → 收起自动折回小方块。两种
+ *     模式的默认态都是折叠。判定方式：竖条常驻 DOM（折叠时只是隐藏），
+ *     运行时数竖条底部区（footArea）的按钮数——官方只有设置齿轮 1 个，
+ *     第三方插件能加按钮的唯一扩展点是 sidebar.footer.action（list 槽，
+ *     渲染在底部区），超出 1 个即三态。不数工作区区域：展开态那里是整棵
+ *     会话树，settle 前后数量不一致会抖动误判。判定每次同步都跑，插件
+ *     热装/热卸自动跟随（实测 3081 的 dsh-femwa 🎭 按钮即走三态）。
+ *     实现：frame 的 data-sidebar-collapsed 是本体契约属性；furl 标记挂
+ *     documentElement（不随 React 重渲染丢失）；grid-template-columns 用
+ *     !important 压过 inline style 归零第一轨（窄屏 details 轨道恒为 0，
+ *     写死安全），滑动动画复用本体 .frame 自带的 grid 过渡；列内容
+ *     visibility:hidden 但保持挂载（display:none 会把后续 auto-placement
+ *     列前移进第一轨）；小方块的鱼 logo 从竖条顶部原生按钮的 brand mark
+ *     克隆，主题色跟随。
  */
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { installNotifyClient, type NotifyItem } from './notify-client.ts'
 import { installSettingsMobile } from './settings-mobile.ts'
+import { installSidebarGesture } from './sidebar-gesture.ts'
 
 /** 官方类型的最小本地声明（构建零 @deepseek-ai 依赖）。
  *
@@ -145,6 +180,15 @@ const PENDING_BAR_ATTR = 'data-meow-smooth-pending'
 const IS_DESKTOP = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(pointer: fine)').matches === true
+
+/** 功能⑱ 竖条折叠标记（挂 documentElement——不随 frame 的 React 重渲染
+ *  丢失；CSS 据此归零侧边栏轨道并显示小方块）。 */
+const FURL_ROOT_ATTR = 'data-meow-smooth-furled'
+/** 功能⑱ 小方块按钮标记（body 直接子级的 button）。 */
+const FAB_ATTR = 'data-meow-smooth-fab'
+/** 功能⑱ header 隐藏标记（挂在 fab 上）：header 计算样式 display:none 时
+ *  由 tick 打上，CSS 据此隐藏色块（与 header 同进退的结构性兜底）。 */
+const HEADER_HIDDEN_ATTR = 'data-meow-smooth-header-hidden'
 
 const FOLD_CSS = `
 /* 过渡放基础态：折叠/展开双向都有动画。 */
@@ -395,6 +439,114 @@ html, body { touch-action: manipulation; }
 }
 [${PENDING_BAR_ATTR}][data-mode="fail"] .toast-sub { display: none; }
 [${PENDING_BAR_ATTR}][data-mode="fail"] .toast-fail { display: block; }
+/* ---- 功能⑱ 手机端竖条折叠为小方块（furl，两态/三态自适应）---- */
+/* 轨道归零：grid-template-columns 是 AppFrame 的 inline style（React 每次
+   渲染都会重写），必须 !important 才能压过。窄屏下第三轨（details）恒为
+   0——computeColumns 在视口 <996px 时 details 必然解出 0，写死安全。
+   滑动动画复用本体 .frame 自带的 grid-template-columns 过渡（slow）。 */
+@media (max-width: 1023px) {
+  html[${FURL_ROOT_ATTR}] [data-slot="root"] > [data-sidebar-collapsed] {
+    grid-template-columns: 0px minmax(0, 1fr) 0px !important;
+  }
+}
+/* 竖条列内容：轨道 0 + overflow:hidden 已裁掉画面，但 visibility:hidden
+   才不挡触控；不能用 display:none——它会让后续 auto-placement 的
+   center/details 列前移进第一轨。border 同步透明防残留 1px 竖线；
+   visibility 挂延迟 transition（离散过渡：到延时终点才翻转），收拢的
+   滑动画播完再隐，观感是整条向左滑出屏幕。 */
+html[${FURL_ROOT_ATTR}] [data-slot="root"] > [data-sidebar-collapsed] > :first-child {
+  visibility: hidden;
+  border-right-color: transparent;
+  transition: visibility 0s var(--ds-transition-duration-slow, 300ms);
+}
+/* furl 态会话 header 让位：整个 header 打 margin-left = 竖条宽度 56px
+ * （标题行、对话/轨迹标签行、动作按钮随盒模型整体右移）——与原生收起
+ * 态（中心列从 x=56 起）逐像素一致，且完全无需测量 header 原生 padding
+ * （左右不对称、furl 后计算值被污染，实测 20/28 不可靠）。margin 挂
+ * 过渡，展开/折叠时标题平滑让位/回归。 */
+@media (max-width: 1023px) {
+  html[${FURL_ROOT_ATTR}] [data-slot="conversation.session.header"] > header {
+    margin-left: 56px;
+    transition: margin-left 200ms var(--ds-ease-in-out, ease);
+  }
+}
+/* 小方块 = 原生侧边栏的"顶部切片"重绘（v3，猫猫拍板）：原竖条宽度
+   56px、竖条同款底色（sidebar-fill）、右缘同款灰色竖线（border-l1，
+   即原生 sidebarCol 的分隔线）——像竖条只在 Header 区存在、不往下
+   延伸。直角、无阴影无圆角（原生就是这样的），鱼 logo 待在原生几何
+   位置：竖条 padding 18px 上/10px 左 + logoRow 36px 内的 28px 按钮
+   → svg 左上角 (12, 27)（鲸鱼标 24×17.66 在按钮内垂直居中的结果）。
+   44px+ 触控面积由 56×56 的整块面积保证。z-index 9997：让位 IME 悬浮
+   条(9999)与提醒卡片(9998)。 */
+[${FAB_ATTR}] {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9997;
+  width: 56px;
+  height: 56px; /* 兜底值：JS 按 header 实高动态覆盖（与 header 等高才规整） */
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: var(--dsw-specific-sidebar-fill, #ffffff);
+  border: none;
+  border-right: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.08));
+  color: var(--dsw-alias-label-primary, #222222);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+  transition: height 200ms var(--ds-ease-in-out, ease);
+}
+[${FAB_ATTR}] svg {
+  position: absolute;
+  left: 12px;
+  top: 27px;
+}
+[${FAB_ATTR}]:active svg { transform: scale(0.9); transition: transform 120ms ease; }
+@media (max-width: 1023px) {
+  html[${FURL_ROOT_ATTR}] [${FAB_ATTR}] { display: flex; }
+}
+/* 弹层避让：设置页/命令面板等 dialog、提醒卡片、IME 悬浮条出现时小方块
+   暂时退场——它们都盖住左上角，留着只会误触（点"小方块"实际点到的是
+   上层弹层）。弹层关掉自动回来。 */
+body:has(div[role="dialog"]) [${FAB_ATTR}],
+body:has([${PENDING_BAR_ATTR}][data-visible="true"]) [${FAB_ATTR}],
+html[${IME_ROOT_ATTR}] [${FAB_ATTR}] {
+  display: none !important;
+}
+/* 与 header 同进退（结构性兜底，猫猫要求"始终跟 Header 在一起"）：
+   header 被 display:none 隐藏（打字 IME 态由 html[ime] 规则即时同步，
+   此处兜住任何其他隐藏来源，≤500ms 轮询延迟）→ 色块同时退场；header
+   显示 → 色块回归。标记由 JS 按 header 计算样式在 tick 里打。 */
+[${FAB_ATTR}][data-meow-smooth-header-hidden] {
+  display: none !important;
+}
+/* 展开辅助动画（"向下展开"的呼应）：窄屏展开瞬间侧边栏内容从上向下
+   揭开（下移+淡入）。选择器在 frame 失去 data-sidebar-collapsed 的一
+   瞬间开始命中 → 动画恰好播一次；收起后停止命中，下次展开重播。列
+   本体的滑出仍由本体 grid 过渡负责，这里只给内容加纵向的"展开感"。
+   transform 只存在于 260ms 动画期间，不影响常驻布局与 portal 弹层。 */
+@media (max-width: 1023px) {
+  [data-slot="root"] > *:not([data-sidebar-collapsed]) [data-slot="sidebar"] > * {
+    animation: meow-smooth-unfold 260ms var(--ds-ease-in-out, ease);
+  }
+}
+@keyframes meow-smooth-unfold {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 `
 
 /** 每个滚动窗折叠前的 scrollTop（展开时恢复，防视口错位）。 */
@@ -514,6 +666,10 @@ function syncHeaderMenu(): void {
 /** 橡皮筋抑制：最近触点坐标（touchstart 初始化，防首个 touchmove 伪位移）。 */
 let lastTouchX = 0
 let lastTouchY = 0
+/** 本次触摸序列是否豁免（编辑控件/composer 卡片内起手）：touchmove 直接
+ *  放行。必须显式标记而非依赖"链为空"——早退路径链为空数组，touchmove
+ *  空链循环零消费照样落到 preventDefault，正是光标手柄冻死的通道。 */
+let overscrollExempt = false
 /** 橡皮筋抑制：本次手势的可滚动祖先链（touchstart 收集，近→远排序；
  *  touchmove 只做边界判定，避免每帧 getComputedStyle 走树）。
  *
@@ -531,16 +687,32 @@ let overscrollChain: HTMLElement[] = []
 /** touchstart：记录触点 + 收集可滚动祖先链（overflow auto/scroll 且确实有
  *  溢出；body/html 本体经 document.scrollingElement 单独兜底——dsh 的滚动
  *  在容器内一般用不到它，普通整页滚动页面靠它保持行为正确）。编辑控件
- *  （textarea/input）不参与——iOS 文本选择句柄拖动依赖原生 touchmove。 */
+ *  （textarea/input）与 composer 卡片内起手 → 整序列豁免（见
+ *  overscrollExempt 注释与卡片分支说明）。 */
 function onTouchStartOverscroll(event: TouchEvent): void {
+  if (gestureApi?.busy() === true) return // 手势拖拽中：橡皮筋逻辑完全旁路
   overscrollChain = []
+  overscrollExempt = false
   if (event.touches.length !== 1) return
   const t0 = event.touches[0]
   lastTouchX = t0.clientX
   lastTouchY = t0.clientY
   const target = event.target
   if (!(target instanceof Element)) return
-  if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) return
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+    overscrollExempt = true
+    return
+  }
+  // composer 卡片内起手（含 textarea 边界外的落点）→ 整序列豁免（2026-08-25
+  // 光标 bug）：iOS 光标/选区手柄的水滴锚点伸出文字边缘 ~20px，折叠后一行
+  // 高的输入框上按手柄时 hit-test 常落在 textarea 外的卡片 padding 上——
+  // target 不是 textarea 却是编辑器光标/选择手势，若走链判定会被"空链零消
+  // 费"preventDefault 冻死（"经常动不了、有时又可以"=落点在框内/框外之差）。
+  // 输入区不是防回弹战场，整卡豁免。
+  if (target.closest('[data-composer-card]') !== null) {
+    overscrollExempt = true
+    return
+  }
   let node: Element | null = target
   while (node !== null && node !== document.documentElement) {
     if (node instanceof HTMLElement) {
@@ -564,6 +736,20 @@ function onTouchStartOverscroll(event: TouchEvent): void {
  *  整条链都已到边界 → preventDefault，阻断文档级橡皮筋。双指不干预。
  *  链上节点的滚动位置随手势推进变化，每次 move 重算即可自然处理。 */
 function onTouchMoveOverscroll(event: TouchEvent): void {
+  // 手势拖拽中必须旁路：本 handler 读取 scrollTop/scrollHeight 等布局
+  // 属性，而手势每帧写 grid 轨道标脏布局——读写交错会强制同步重排，
+  // touchmove 高频触发下成倍放大（卡顿元凶之一）。
+  if (gestureApi?.busy() === true) return
+  // 文本选区在场（长按选词后出现，拖选区手柄扩展选区）→ 绝不
+  // preventDefault：手柄拖动也是普通 touchmove，拦掉它 iOS 就取消整个
+  // 序列的默认行为=选区冻结、"两条杠杠拖不动"（2026-08-25 猫猫报）。
+  // Safari 浏览器里系统接管使该序列多为 cancelable=false 拦不住，故此
+  // bug 只在 standalone PWA（cancelable=true）暴露；有选区时防回弹本来
+  // 轮不到 JS 兜底（现代 iOS 由上方 CSS overscroll-behavior:none 负责）。
+  const sel = document.getSelection()
+  if (sel !== null && sel.type === 'Range') return
+  // touchstart 已豁免的序列（编辑控件/composer 卡片内起手）→ 整段放行。
+  if (overscrollExempt) return
   if (event.touches.length !== 1) return
   const touch = event.touches[0]
   const dy = touch.clientY - lastTouchY
@@ -633,6 +819,37 @@ function setImeState(on: boolean): void {
  *  自动 focus textarea，触屏上聚焦即弹键盘）。 */
 let lastComposerPointer = 0
 
+/** 程序化聚焦抑制（需求⑳，2026-08-24 猫猫：输入法弹起一下再收回很碍眼，
+ *  压根别让它弹）。官方 InputBar unlock effect 在 mount/会话切换时无条件
+ *  focus textarea（桌面体验好），触屏上 focus 即弹键盘——旧方案靠
+ *  visualViewport 检测键盘已弹再 blur，天然慢一拍。本拦截器在 capture
+ *  阶段同步 blur：focus→blur 同任务完成时键盘弹出动画不会启动。
+ *
+ *  判据：composer 卡片内 textarea 的 focusin，若近期（600ms）没有用户
+ *  在卡片内的 pointerdown，即为程序化聚焦（unlock effect / 恢复焦点），
+ *  立即撤焦；用户点输入框的路径有先行 pointerdown，照常放行。
+ *  仅粗指针启用（桌面 autofocus 无害且是官方意图）；抑制器自身以
+ *  suppressing 防重入。 */
+let suppressing = false
+const supTrace = (msg: string): void => {
+  const w = window as unknown as Record<string, unknown>
+  const arr = (w.__meowSuppressTrace as string[] | undefined) ?? []
+  arr.push(`${Date.now() % 100000} ${msg}`)
+  if (arr.length > 20) arr.shift()
+  w.__meowSuppressTrace = arr
+}
+const suppressFocusIn = (event: FocusEvent): void => {
+  document.documentElement.dataset.supCalled = 'yes'
+  const target = event.target
+  if (!(target instanceof HTMLTextAreaElement) || !isCoarsePointer()) { supTrace('skip not-ta-or-fine'); return }
+  if (composerCardOf(target) === null) { supTrace('skip outside card'); return }
+  if (Date.now() - lastComposerPointer < 600) { supTrace('skip recent user pointer'); return }
+  suppressing = true
+  target.blur()
+  suppressing = false
+  supTrace('suppressed programmatic focus')
+}
+
 /** IME 状态统一同步（resize 与 500ms 轮询共用，转换检测只跑一次）：
  *  false→true 且最近无用户点击输入框（自动聚焦弹的键盘）→ blur 收起
  *  键盘、不显示条——切换会话只是看内容时键盘不该默认打开；有用户点击
@@ -659,10 +876,13 @@ function syncIme(): void {
   }
 }
 
-/** 焦点进入卡片：若处于折叠态则展开并恢复滚动位置。 */
+/** 焦点进入卡片：若处于折叠态则展开并恢复滚动位置。
+ *  焦点已被抑制器撤走（activeElement 不再是 target）时不展开——会话
+ *  切换的自动聚焦被拦截后，卡片应保持折叠态（无焦点=无输入意图）。 */
 function onFocusIn(event: FocusEvent): void {
   const card = composerCardOf(event.target)
   if (card === null) return
+  if (event.target !== document.activeElement) return
   expandCard(card)
   // 触屏键盘的回车键显示为"换行"（配合需求 4：触屏 Enter 插入换行）。
   // 注意：这里不再直接压缩 header——键盘是否弹起由 visualViewport
@@ -752,8 +972,9 @@ function isCoarsePointer(): boolean {
   return coarseCache
 }
 
-/** 触屏 Enter → 换行：capture 阶段拦截（早于 React onKeyDown 的发送逻辑），
- *  手动插入换行并派发 input 事件让受控层（keyboard.setDraft）感知。
+/** 触屏 Enter → 换行：capture 阶段只断官方发送路径（stopPropagation，
+ *  React root 收不到 keydown → 官方 submit 不触发），默认行为留给浏览器
+ *  原生插入换行（v5.3 重写，详见函数内注释）。
  *  Shift/Ctrl/Alt/Meta+Enter、IME 选词（isComposing/keyCode 229）放行。 */
 function onKeyDownCapture(event: KeyboardEvent): void {
   if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return
@@ -762,19 +983,16 @@ function onKeyDownCapture(event: KeyboardEvent): void {
   if (!(target instanceof HTMLTextAreaElement) || target.readOnly || target.disabled) return
   if (composerCardOf(target) === null) return
   if (!isCoarsePointer()) return
-  event.preventDefault()
+  // 只断官方发送路径，把换行还给浏览器（2026-08-25 v5.3 重写，修"换行
+  // 丢失/跳回"）：旧实现 preventDefault + 手动改 DOM value + setSelectionRange
+  // + 派发合成 InputEvent——与本体受控层（textarea value={draft}）产生
+  // DOM/state 不一致窗口，commit 前任何其他重渲染都会用旧 draft 写回
+  // textarea（换行被抹掉="换不到"；晚一步覆盖="换到了又跳回"），且绕过
+  // 官方 beforeinput 编辑跟踪与 Safari 布局修复。实际只需 stopPropagation：
+  // 官方的 Enter→submit 挂在 React root 的 keydown 上，document capture
+  // 断传播即收不到、不会发送；不 preventDefault 则 WebKit 原生插入换行，
+  // beforeinput/input/onChange/mirror 全走原生节奏零竞争。
   event.stopPropagation()
-  const start = target.selectionStart ?? target.value.length
-  const end = target.selectionEnd ?? start
-  const next = target.value.slice(0, start) + '\n' + target.value.slice(end)
-  target.value = next
-  const caret = start + 1
-  target.setSelectionRange(caret, caret)
-  target.dispatchEvent(new InputEvent('input', {
-    bubbles: true,
-    inputType: 'insertLineBreak',
-    data: '\n',
-  }))
 }
 
 /** 禁止页面缩放：viewport meta 加 maximum-scale=1 + user-scalable=no
@@ -806,18 +1024,24 @@ function lockViewport(): void {
  * 也无害；只拦 Ctrl 修饰的缩放手势与缩放按键，绝不拦普通滚轮（不破坏
  * 正常滚动）与普通按键。缩放检测提示层已按用户要求移除（UX 干扰）。
  */
-function lockDesktopZoom(): void {
-  document.addEventListener('wheel', (event) => {
+function lockDesktopZoom(): () => void {
+  const onWheel = (event: WheelEvent): void => {
     if (event.ctrlKey) event.preventDefault()
-  }, { capture: true, passive: false })
-  document.addEventListener('keydown', (event) => {
+  }
+  const onKeyDown = (event: KeyboardEvent): void => {
     if (!(event.ctrlKey || event.metaKey)) return
     const code = event.code
     if (code === 'Equal' || code === 'Minus' || code === 'Digit0'
       || code === 'NumpadAdd' || code === 'NumpadSubtract' || code === 'Numpad0') {
       event.preventDefault()
     }
-  }, { capture: true })
+  }
+  document.addEventListener('wheel', onWheel, { capture: true, passive: false })
+  document.addEventListener('keydown', onKeyDown, { capture: true })
+  return (): void => {
+    document.removeEventListener('wheel', onWheel, { capture: true })
+    document.removeEventListener('keydown', onKeyDown, { capture: true })
+  }
 }
 
 /** dsh 布局契约断点（ui-layout columns.ts SIDEBAR_AUTO_COLLAPSE）。 */
@@ -837,31 +1061,215 @@ function maybeCollapseSidebar(layout: ILayout): void {
   // 窄屏判定与 AppFrame 一致（frame 宽，非 window）：窄屏 toggle 才 flip
   // narrowExpanded；宽屏 toggle 会翻转宽度 preference（误展开手动收起的）。
   if (frame.getBoundingClientRect().width >= SIDEBAR_AUTO_COLLAPSE) return
-  if (frame.hasAttribute('data-sidebar-collapsed')) return // 已收起
+  // 已在 0 档（收起 + furl）→ 无事可做；窄档（collapsed 不 furl）继续走
+  // collapseToZero 收到 0 档——需求⑲ v3 后窄档是合法在场态，选会话后
+  // 应自动折回小方块而不是停在细条。
+  if (frame.hasAttribute('data-sidebar-collapsed') && furlRoot()) return
+  // 手机端优先走手势模块的动画收起（宽档平滑滑出、无 rail 闪现）。
+  if (gestureApi?.collapseToZero() === true) return
   layout.toggleSidebar()
+  syncSidebarFurl() // 功能⑱：选会话收起后立即折回小方块
 }
 
-/** 手机端：侧边栏展开时点击右侧空间（边栏以外区域）→ 自动收起。
- *  用 click（pointerup 之后）而非 pointerdown：拖拽滚动不产生 click，
- *  且被点元素的动作先于布局变化完成，避免收起重排导致的误点。
+// --- 功能⑱ 手机端竖条折叠为小方块（furl，两态/三态自适应）---
+
+/** 官方竖条底部区按钮基线（1 = 设置齿轮）。第三方插件能往竖条上加按钮
+ *  的唯一扩展点是 sidebar.footer.action（list 槽），渲染在底部区——所以
+ *  只数底部区（footArea）的按钮：超出 1 个即认定有插件用了竖条 → 小方块
+ *  改走三态（按一下先出竖条，插件按钮可达），否则两态（直接展开）。
+ *  不数工作区区域：那里展开态是整棵会话树（每行还挂操作按钮），收起
+ *  动画 settle 前后数量不一致，会造成计数抖动误判；新会话按钮/toggle
+ *  是官方固定件也无需数。竖条折叠期间只是 visibility:hidden，DOM 常驻，
+ *  任何时刻都能数；判定每次同步都跑，插件热装/热卸自动跟随。 */
+const OFFICIAL_FOOT_BUTTONS = 1
+
+/** layout 服务是否就绪（apply 里检查后置 true）：两态的"展开"依赖
+ *  ctx.layout.toggleSidebar，服务缺失时绝不折叠（否则用户没有入口）。 */
+let layoutReady = false
+
+/** furl 标记读写。 */
+function furlRoot(): boolean {
+  return document.documentElement.getAttribute(FURL_ROOT_ATTR) === 'true'
+}
+function setFurled(on: boolean): void {
+  if (on) document.documentElement.setAttribute(FURL_ROOT_ATTR, 'true')
+  else document.documentElement.removeAttribute(FURL_ROOT_ATTR)
+}
+
+/** 竖条顶部原生 toggle 按钮：侧边栏渲染列首个子元素（logoRow）里最后一
+ *  个 button——wide 态品牌按钮在前、toggle 在后，收起态只剩它一个。
+ *  Tooltip 不包额外元素时按钮直接命中，包了也能靠"子树内最后一个 button"
+ *  兜住；结构变化返回 null，调用方自行降级。 */
+function railToggleButton(): HTMLButtonElement | null {
+  const column = document.querySelector('[data-slot="sidebar"] > *')
+  const logoRow = column?.firstElementChild ?? null
+  if (logoRow === null) return null
+  const buttons = logoRow.querySelectorAll('button')
+  return buttons.length > 0 ? buttons[buttons.length - 1] : null
+}
+
+/** 竖条自适应切换判定：数竖条底部区（footArea = 渲染列最后一个子元素）
+ *  的 button 数，超出官方基线（1 个设置齿轮）即认定 sidebar.footer.action
+ *  槽位有插件加了按钮 → 小方块走三态（按一下先出竖条，插件按钮可达），
+ *  否则两态（按一下直接展开）。列未挂载按"无额外"处理（等挂载后下个
+ *  tick 再判）。 */
+function railHasExtraButtons(): boolean {
+  const column = document.querySelector('[data-slot="sidebar"] > *')
+  const foot = column?.lastElementChild ?? null
+  if (foot === null) return false
+  return foot.querySelectorAll('button').length > OFFICIAL_FOOT_BUTTONS
+}
+
+/** 三态模式：用户经小方块唤出过竖条（中间态）——true 期间轮询不得重新
+ *  折叠；展开⇄收起转换时复位，收起即回折叠态。两态模式不使用。 */
+let railRevealed = false
+/** 上一次观测到的收起态（检测展开⇄收起转换用）；null = 尚未观测。 */
+let lastRailCollapsed: boolean | null = null
+
+/** 小方块按钮（body 直接子级，一次性创建）。点击行为在 apply 里接线
+ *  （需要 layout 服务）：解除 furl 并直接展开完整侧边栏（两态）。 */
+function sidebarFab(): HTMLButtonElement {
+  const existing = document.querySelector<HTMLButtonElement>(`[${FAB_ATTR}]`)
+  if (existing !== null) return existing
+  const fab = document.createElement('button')
+  fab.type = 'button'
+  fab.setAttribute(FAB_ATTR, 'true')
+  fab.setAttribute('aria-label', '打开侧边栏')
+  document.body.appendChild(fab)
+  return fab
+}
+
+/** 把竖条顶部原生按钮里的 DeepSeek 鱼 logo（brand mark svg）克隆进小
+ *  方块：幂等；React 未挂完下个 tick 重试；结构变化克隆不到则标记放弃
+ *  （留白方块仍可点，避免每 tick 反复查询）。 */
+function populateFabIcon(): void {
+  const fab = sidebarFab()
+  if (fab.childElementCount > 0 || fab.dataset.meowFabIconFail === '1') return
+  const toggle = railToggleButton()
+  if (toggle === null) return
+  const mark = toggle.querySelector('span svg')
+  if (mark === null) {
+    fab.dataset.meowFabIconFail = '1'
+    return
+  }
+  fab.appendChild(mark.cloneNode(true))
+}
+
+/** 色块高度与 header 等高（猫猫：和现有 header 一样高才规整）+ 与 header
+ *  同进退（header 被隐藏/被盖住 → 色块同步退场）：JS 实测 header 实高
+ *  写入 fab inline style，底边与 header 底边重合。header 未挂载/空壳
+ *  （新会话页 0×0）时保持 CSS 兜底 56px——空壳不算"隐藏"（那里色块是
+ *  唯一的侧边栏入口）。隐藏判定两种：①计算样式 display:none（打字 IME
+ *  等）；②覆盖检测——header 中心点 elementFromPoint 不属于 header 子树
+ *  （全屏视图如 femGen 画布盖在 header 上）。值不变不写，避免无谓的
+ *  样式重算。 */
+function syncFabHeight(): void {
+  const header = document.querySelector('[data-slot="conversation.session.header"] > header')
+  const fab = sidebarFab()
+  // 同进退：header 计算样式 display:none（如打字 IME 态，IME 由 html[ime]
+  // CSS 规则即时同步，这里是兜住任何其他隐藏来源的结构性兜底）→ 打隐藏
+  // 标记；header 显示 → 撤标记。新会话页空壳 header 不走此分支（display
+  // 不是 none，只是没内容）。
+  if (header === null) {
+    fab.removeAttribute(HEADER_HIDDEN_ATTR)
+    return
+  }
+  // 同进退的边界：header 被 display:none 隐藏 → 色块退场。但"无会话的
+  // 空壳 header"（新会话页：官方同样以 display:none 渲染、且无任何子
+  // 元素）不算隐藏——那里色块是唯一的侧边栏入口（猫猫拍板过"新会话页
+  // 只留那一点点 sidebar"）。区分锚点：空壳无子元素；打字 IME 态
+  // display:none 时子树保持挂载，不受影响。
+  const isEmptyShell = header.firstElementChild === null
+  let hidden = !isEmptyShell && getComputedStyle(header).display === 'none'
+  // 覆盖检测（display:none 查不出的"隐藏"）：全屏视图（如 femGen 画布）
+  // 盖在 header 上面时，header 中心点的最顶层元素不属于 header 子树 →
+  // 视觉上 header 已被顶掉 → 色块同步退场。半透明 header 下滚动内容
+  // 透出不受影响——内容在 header 下层，elementFromPoint 返回的仍是
+  // header 子树（header 盒子本身是命中目标）。
+  if (!hidden && !isEmptyShell) {
+    const r = header.getBoundingClientRect()
+    if (r.height > 1 && r.width > 1) {
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      if (top !== null && !header.contains(top)) hidden = true
+    }
+  }
+  if (hidden) fab.setAttribute(HEADER_HIDDEN_ATTR, '1')
+  else fab.removeAttribute(HEADER_HIDDEN_ATTR)
+  const h = Math.round(header.getBoundingClientRect().height)
+  if (!(h > 1)) return // 空壳 header（新会话页）→ 保持兜底 56
+  if (fab.dataset.meowH === String(h)) return
+  fab.dataset.meowH = String(h)
+  fab.style.height = `${h}px`
+}
+
+/** 功能⑱状态同步（两态/三态自适应）：手机端（粗指针）+ 窄屏 + 侧边栏
+ *  收起态 → 折叠成小方块（两种模式的默认态都是折叠）；展开态/宽屏/桌面
+ *  一律还原原生。三态模式下"用户唤出过竖条"期间不重新折叠（竖条是
+ *  中间态），展开⇄收起转换时复位。幂等，双通道驱动：500ms 轮询兜底
+ *  （原生收起路径无钩子）+ 插件自身的收起动作后直调（即时折叠不闪竖条）。 */
+function syncSidebarFurl(): void {
+  // 手势进行中（需求⑲）一切自动折叠/展开干预冻结：拖拽里 enterDrag 已
+  // 解除 furl 让 rail 本体跟手，此刻 tick 若再折回会毁掉拖拽状态。
+  if (gestureApi?.busy() === true) return
+  if (!layoutReady) return
+  if (!isCoarsePointer()) {
+    if (furlRoot()) setFurled(false)
+    return
+  }
+  syncFabHeight()
+  const frame = frameElement()
+  if (frame === null) return
+  const narrow = frame.getBoundingClientRect().width < SIDEBAR_AUTO_COLLAPSE
+  const collapsed = frame.hasAttribute('data-sidebar-collapsed')
+  if (lastRailCollapsed !== null && collapsed !== lastRailCollapsed) railRevealed = false
+  lastRailCollapsed = collapsed
+  if (!narrow) gestureApi?.clearHold() // 离开窄屏（转宽屏/桌面）：窄档保持失效
+  // 窄档停留（需求⑲手势拉出的原生 rail）与三态中间态一样是合法的收起
+  // 停留态：不折回小方块，直到用户推回到 0（furl 分支会清 hold）。
+  if (!narrow || !collapsed || railRevealed || gestureApi?.narrowHold() === true) {
+    if (furlRoot()) setFurled(false)
+    return
+  }
+  setFurled(true)
+  gestureApi?.clearHold()
+  populateFabIcon()
+}
+
+/** 手机端：侧边栏在场（展开态或手势拉出的窄档）时点击右侧空间 → 动画
+ *  收起到 0 档。用 click（pointerup 之后）而非 pointerdown：拖拽滚动不产
+ *  生 click，且被点元素的动作先于收起重排完成，避免误点。
  *  data-slot wrapper 是 display:contents（rect 全 0），所以用 DOM 包含
  *  判定为主、侧边栏渲染列（wrapper 子元素）rect 兜底。 */
 function onClickDismissSidebar(event: MouseEvent, layout: ILayout): void {
+  const dbg = (msg: string): void => { if (window.location.search.includes('meow-debug')) console.log(`[meow-smooth] dismiss: ${msg}`) }
   const frame = frameElement()
-  if (frame === null) return
-  if (frame.getBoundingClientRect().width >= SIDEBAR_AUTO_COLLAPSE) return // 宽屏不管
-  if (frame.hasAttribute('data-sidebar-collapsed')) return // 已收起
+  if (frame === null) { dbg('no frame'); return }
+  if (frame.getBoundingClientRect().width >= SIDEBAR_AUTO_COLLAPSE) { dbg('wide viewport'); return }
+  const collapsed = frame.hasAttribute('data-sidebar-collapsed')
+  const furled = furlRoot()
+  if (collapsed && furled) { dbg('zero-tier, nothing to do'); return } // 0 档（小方块态）：侧边栏不在场，无事可做
+  // 手势拖拽/磁吸进行中不干预（以手势模块内部状态为准，不受陈旧 DOM 标记影响）
+  if (gestureApi?.busy() === true) { dbg('gesture busy'); return }
   const target = event.target
-  if (!(target instanceof Element)) return
+  if (!(target instanceof Element)) { dbg('target not element'); return }
   // 侧边栏 DOM 内、拖拽手柄、弹层（菜单/命令面板/审批/overlay）→ 不收起。
-  if (target.closest(
+  const overlayHit = target.closest(
     '[data-slot="sidebar"], [data-side="sidebar"], [role="menu"], [role="menuitem"], '
     + '[role="listbox"], [role="option"], [role="dialog"], [data-shell-overlay]',
-  )) return
-  // 视觉兜底：点击 x 仍在侧边栏渲染列内 → 不收起。
+  )
+  if (overlayHit !== null) { dbg(`inside overlay ${overlayHit.tagName}`); return }
+  // 视觉兜底：点击 x 仍在侧边栏渲染列内 → 不收起（窄档时列右缘 ≈ 56px）。
   const column = document.querySelector('[data-slot="sidebar"] > *')
-  if (column instanceof HTMLElement && event.clientX < column.getBoundingClientRect().right) return
+  if (column instanceof HTMLElement && event.clientX < column.getBoundingClientRect().right) {
+    dbg(`inside column x=${event.clientX} right=${Math.round(column.getBoundingClientRect().right)}`)
+    return
+  }
+  // 手机端优先动画收起（窄档/宽档统一：直接收到 0 档，无中间档停顿）。
+  const taken = gestureApi?.collapseToZero() === true
+  dbg(`collapseToZero → ${taken}`)
+  if (taken) return
   layout.toggleSidebar()
+  syncSidebarFurl() // 功能⑱：收起后立即折回小方块（不等 500ms tick）
 }
 
 /** 本地 pending 汇报条目（React 侧 useSessions 数据 → 横幅模块）。 */
@@ -896,13 +1304,27 @@ interface HostQuestion {
   title?: string
 }
 
-/** 横幅合并条目（host 审批 + 本地提问/计划审，统一呈现）。 */
+/** host 端 /pending events 里 kind='failed' 的回合失败事件（v0.4.0+ host
+ *  才会产出；系统通知由 notify-client 消费同一份数据，横幅卡片在这里）。 */
+interface HostFailureEvent {
+  id: string
+  sessionId: string
+  title?: string
+  message?: string
+  at: number
+}
+
+/** 横幅合并条目（host 审批 + 本地提问/计划审 + host 回合失败，统一呈现）。 */
 interface MergedItem {
   sessionId: string
   title: string
-  kind: 'approval' | 'question' | 'plan-review'
+  kind: 'approval' | 'question' | 'plan-review' | 'failed'
   /** 审批的稳定去重 id（host 投影；通知模块按此去重）。 */
   approvalId?: string
+  /** failed 专有：稳定去重 id（sessionId:turn:error，localStorage 已读标记用）。 */
+  failureId?: string
+  /** failed 专有：失败摘要（host 已截断 120 字符）。 */
+  message?: string
   toolName?: string
   reason?: string
   command?: string
@@ -919,6 +1341,32 @@ let currentSessionId: string | undefined
 let hostApprovals: HostApproval[] = []
 /** host 轮询到的未决提问（审计投影；与 localPending 合并时 host 为准）。 */
 let hostQuestions: HostQuestion[] = []
+/** host 轮询到的回合失败事件（快照替换，随 host 队列 TTL 消失）。 */
+let hostFailures: HostFailureEvent[] = []
+/** 已在横幅展示过的失败事件 id（localStorage 持久化）：host 队列 TTL 10
+ *  分钟内不重复弹卡。失败是"信息"不是"待办"，渲染过即算送达，点击/
+ *  上滑只是提前收起。 */
+const SEEN_FAILURES_KEY = 'meow-smooth:seen-failures'
+const SEEN_FAILURES_CAP = 60
+function loadSeenFailures(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SEEN_FAILURES_KEY)
+    const list: unknown = raw === null ? [] : JSON.parse(raw)
+    return new Set(Array.isArray(list) ? list.filter(item => typeof item === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+function markFailureSeen(id: string): void {
+  seenFailures.add(id)
+  try {
+    const list = [...seenFailures].slice(-SEEN_FAILURES_CAP)
+    localStorage.setItem(SEEN_FAILURES_KEY, JSON.stringify(list))
+  } catch {
+    // localStorage 不可用（隐私模式等）→ 仅本次会话去重。
+  }
+}
+let seenFailures = loadSeenFailures()
 /** 卡片点击跳转回调（apply 闭包注入 ctx.sessions.open）。 */
 let openSession: ((sessionId: string) => void) | undefined
 /** 会话列表强制刷新回调（apply 闭包注入 ctx.sessions.refresh；跳转遇
@@ -994,7 +1442,7 @@ function hideToast(suppress = false): void {
   bannerMode = 'idle'
   if (suppress && bannerItem !== undefined) {
     suppressedUntil = Date.now() + 30_000
-    suppressedKey = `${bannerItem.sessionId}:${bannerItem.kind}`
+    suppressedKey = `${bannerItem.sessionId}:${bannerItem.kind}${bannerItem.failureId !== undefined ? `:${bannerItem.failureId}` : ''}`
   }
 }
 
@@ -1016,10 +1464,11 @@ function showFailHint(text: string): void {
 }
 
 /** 合并当前可见的待处理条目：host 审批（细节全）+ host 提问（审计投影
- *  权威）+ 本地提问/计划审（host 未覆盖的会话）。当前会话的项在官方
- *  面板已显示时剔除（避免与 takeover 面板重复）；官方面板未显示时保留
- *  （host 帧丢失/跳转前，横幅兜底）。approval 优先于提问/计划审（可应答
- *  性最强），同类按时间新→旧。 */
+ *  权威）+ 本地提问/计划审（host 未覆盖的会话）+ host 回合失败事件
+ *  （v0.4.0+，渲染过即记已读）。当前会话的审批/提问项在官方面板已显示时
+ *  剔除（避免与 takeover 面板重复）；失败项一律剔除当前会话（错误行就在
+ *  眼前，卡片只提醒"不在场"的会话）。approval 优先于提问/失败/计划审，
+ *  同类按时间新→旧。 */
 function mergedPendingItems(): MergedItem[] {
   const out: MergedItem[] = []
   const localBySession = new Map<string, LocalPendingItem>()
@@ -1064,7 +1513,20 @@ function mergedPendingItems(): MergedItem[] {
       askedAt: Date.now(),
     })
   }
-  const rank = (kind: MergedItem['kind']): number => kind === 'approval' ? 0 : kind === 'question' ? 1 : 2
+  for (const failure of hostFailures) {
+    if (seenFailures.has(failure.id)) continue // 展示过即送达，TTL 内不重弹
+    if (failure.sessionId === currentSessionId) continue // 正看着的会话：错误行就在眼前
+    out.push({
+      sessionId: failure.sessionId,
+      title: failure.title ?? '',
+      kind: 'failed',
+      failureId: failure.id,
+      ...(failure.message !== undefined ? { message: failure.message } : {}),
+      askedAt: failure.at,
+    })
+  }
+  const rank = (kind: MergedItem['kind']): number =>
+    kind === 'approval' ? 0 : kind === 'question' ? 1 : kind === 'failed' ? 2 : 3
   out.sort((a, b) => rank(a.kind) - rank(b.kind) || b.askedAt - a.askedAt)
   return out
 }
@@ -1128,17 +1590,25 @@ function onPendingBarClick(): void {
 /** 通知模块句柄（apply 安装；横幅刷新/轮询处调用）。 */
 let notifyHandle: ReturnType<typeof installNotifyClient> | undefined
 
-/** 合并条目 → 通知条目（approval 用 approvalId 去重，其余用 会话:类型）。 */
+/** 手势模块句柄（需求⑲，apply 安装；syncSidebarFurl 据此豁免窄档停留——
+ *  用户用手势拉出的原生 rail 是合法停留态，不能被 500ms tick 折回小方块）。 */
+let gestureApi: ReturnType<typeof installSidebarGesture> | undefined
+
+/** 合并条目 → 通知条目（approval 用 approvalId 去重，其余用 会话:类型）。
+ *  failed 不走这里——它的系统通知由 notify-client 消费 events 数据负责
+ *  （含页面 hidden 判定），横幅这边再转一份会双弹。 */
 function notifyItemsOf(merged: MergedItem[]): NotifyItem[] {
-  return merged.map(item => ({
-    sessionId: item.sessionId,
-    kind: item.kind,
-    id: item.kind === 'approval' && item.approvalId !== undefined
-      ? item.approvalId
-      : `${item.sessionId}:${item.kind}`,
-    title: item.title,
-    ...(item.toolName !== undefined && item.toolName !== '' ? { toolName: item.toolName } : {}),
-  }))
+  return merged
+    .filter(item => item.kind !== 'failed')
+    .map(item => ({
+      sessionId: item.sessionId,
+      kind: item.kind,
+      id: item.kind === 'approval' && item.approvalId !== undefined
+        ? item.approvalId
+        : `${item.sessionId}:${item.kind}`,
+      title: item.title,
+      ...(item.toolName !== undefined && item.toolName !== '' ? { toolName: item.toolName } : {}),
+    }))
 }
 
 /** 卡片整体刷新：合并数据 → 两行文字（会话名 + 提示）+ 通知模块
@@ -1155,12 +1625,13 @@ function updatePendingBanner(): void {
   }
   const item = items[0]
   if (bannerItem === undefined
-    || bannerItem.sessionId !== item.sessionId || bannerItem.kind !== item.kind) {
+    || bannerItem.sessionId !== item.sessionId || bannerItem.kind !== item.kind
+    || bannerItem.failureId !== item.failureId) {
     bannerMode = 'idle' // 主条目变了，收起 fail 态并解除静默（重新弹）
     suppressedUntil = 0
   }
   bannerItem = item
-  const key = `${item.sessionId}:${item.kind}`
+  const key = `${item.sessionId}:${item.kind}${item.failureId !== undefined ? `:${item.failureId}` : ''}`
   if (suppressedUntil > Date.now() && suppressedKey === key) return
   ensurePendingBarSkeleton(bar)
   if (bannerMode !== 'fail') bar.removeAttribute('data-mode')
@@ -1168,8 +1639,17 @@ function updatePendingBanner(): void {
   const subEl = bar.querySelector<HTMLElement>('.toast-sub')
   if (titleEl === null || subEl === null) return
   const name = item.title === '' ? '未命名会话' : item.title
-  const what = item.kind === 'approval' ? '有权限申请待处理，点击查看…'
-    : item.kind === 'plan-review' ? '有计划待审，点击查看…' : '有提问待回答，点击查看…'
+  let what: string
+  if (item.kind === 'failed') {
+    // 失败卡片：渲染即记"已读"（host 队列 TTL 内不重弹；信息类非待办）。
+    if (item.failureId !== undefined) markFailureSeen(item.failureId)
+    what = item.message !== undefined && item.message !== ''
+      ? `运行失败：${item.message.slice(0, 90)}${item.message.length > 90 ? '…' : ''}，点击查看…`
+      : 'AI 回合因错误中断，点击查看…'
+  } else {
+    what = item.kind === 'approval' ? '有权限申请待处理，点击查看…'
+      : item.kind === 'plan-review' ? '有计划待审，点击查看…' : '有提问待回答，点击查看…'
+  }
   titleEl.textContent = name
   subEl.textContent = what
   bar.style.transform = '' // 清滑出动画的 inline 位移（显示态由 CSS 规则接管）
@@ -1198,37 +1678,57 @@ async function pollHostApprovals(): Promise<void> {
     if (!res.ok) {
       hostApprovals = []
       hostQuestions = []
+      hostFailures = []
       updatePendingBanner()
       return
     }
     const data = await res.json() as {
       approvals?: HostApproval[]
       questions?: HostQuestion[]
-      events?: { id: string; sessionId: string; toolCalls: number }[]
+      events?: { id: string; sessionId: string; toolCalls: number; kind?: string; title?: string; message?: string; at?: number }[]
     }
     hostApprovals = Array.isArray(data.approvals) ? data.approvals : []
     hostQuestions = Array.isArray(data.questions) ? data.questions : []
-    notifyHandle?.onPollResult({ events: data.events })
+    const events = Array.isArray(data.events) ? data.events : []
+    // 失败事件快照（横幅卡片用）；系统通知由 notify-client 消费同一数组。
+    hostFailures = events
+      .filter(event => event.kind === 'failed')
+      .map(event => ({
+        id: event.id,
+        sessionId: event.sessionId,
+        ...(event.title !== undefined ? { title: event.title } : {}),
+        ...(event.message !== undefined ? { message: event.message } : {}),
+        at: typeof event.at === 'number' ? event.at : Date.now(),
+      }))
+    notifyHandle?.onPollResult({ events })
   } catch {
     hostApprovals = []
     hostQuestions = []
+    hostFailures = []
   }
   updatePendingBanner()
 }
 
 /** 安装卡片（apply 调用）：启动轮询 + 可见性刷新。open 为 undefined 时
- *  跳转不可用（sessions 服务缺失），点击卡片提示手动切换。 */
+ *  跳转不可用（sessions 服务缺失），点击卡片提示手动切换。返回拆除函数
+ *  （3s 轮询定时器 + visibilitychange 监听）——双实例时期轮询会翻倍堆积，
+ *  且旧实例的横幅状态机与新实例各自为政。 */
 function installPendingBanner(
   open: ((sessionId: string) => void) | undefined,
   refresh: (() => Promise<void>) | undefined,
-): void {
+): () => void {
   openSession = open
   refreshSessions = refresh
   void pollHostApprovals()
-  window.setInterval(() => { void pollHostApprovals() }, 3000)
-  document.addEventListener('visibilitychange', () => {
+  const pollTick = window.setInterval(() => { void pollHostApprovals() }, 3000)
+  const onVisibility = (): void => {
     if (document.visibilityState === 'visible') void pollHostApprovals()
-  })
+  }
+  document.addEventListener('visibilitychange', onVisibility)
+  return (): void => {
+    window.clearInterval(pollTick)
+    document.removeEventListener('visibilitychange', onVisibility)
+  }
 }
 
 /** 隐形 dock 条目：不渲染 UI，只随快照驱动"选中会话后收起侧边栏"。
@@ -1252,6 +1752,21 @@ export interface FoldDockProps {
 }
 
 export function FoldDock({ session, onSessionSwitch, reportPending, useSessions }: FoldDockProps): null {
+  // 需求⑳：会话切换后撤掉自动聚焦——触屏上弹键盘很碍眼。
+  // 官方 unlock effect 在 mount/session 切换时无条件 focus textarea；
+  // 这里在 sessionId 变化后延迟检查并撤焦（setTimeout 确保 React effects
+  // 全部完成后执行；50ms 远小于键盘弹出动画的启动时间）。
+  useEffect(() => {
+    if (!isCoarsePointer()) return
+    const timer = window.setTimeout(() => {
+      const ta = document.querySelector('[data-composer-card] textarea')
+      if (ta instanceof HTMLTextAreaElement && document.activeElement === ta) {
+        ta.blur()
+      }
+    }, 50)
+    return () => window.clearTimeout(timer)
+  }, [session.sessionId])
+
   useEffect(() => {
     onSessionSwitch()
   }, [session.sessionId, onSessionSwitch])
@@ -1280,35 +1795,74 @@ export const inject = ['slots', 'layout', 'sessions']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
+  // 排障分段标记：确认 apply 执行到哪一段（rev-lag 时区分新旧 bundle）。
+  document.documentElement.dataset.meowApplyStage = 'enter'
+  // 单实例拆除协议（2026-08-25 边栏循环动画 bug 根治）：dsh 模块热替换会
+  // 在不刷新页面的情况下重新执行本脚本，旧实例的定时器/监听器此前从不
+  // 拆除——新旧实例并存且内部状态分歧时（如旧实例 railRevealed=true、
+  // 新实例全新状态），两边的 syncSidebarFurl 轮询互踢 furl 标记，边栏陷入
+  // "展开到细条⇄收到 0"的永动循环。与手势模块 __meowSmoothGestureDispose
+  // 同款协议：新实例入口先拆旧实例全部运行期资源，再安装自己。
+  const w = window as unknown as Record<string, unknown>
+  ;(w.__meowSmoothClientDispose as (() => void) | undefined)?.()
+  /** 本实例登记的拆除函数清单（安装完成后打包挂 window）。 */
+  const disposers: Array<() => void> = []
   // UI 注入开关（2026-08-20 为"录优化前原生界面素材"加，轻量 URL 方案）：
   // URL 带 ?meow-smooth-ui=off 时跳过全部 UI 注入（CSS/锁缩放/设置改造/事件
   // 委托/横幅/通知 client 桥），界面完全原生；host 侧压缩代理/审计投影/pending
   // 路由不受影响（手机 HTTPS 入口仍由 8445 代理提供服务，无需重启 3080）。
   // 录原生素材：手机访问 https://node.tailf4760e.ts.net/?meow-smooth-ui=off
-  // 恢复优化版：去掉 query 刷新即可。
+  // 恢复优化版：去掉 query 刷新即可。（上方入口拆除已先于本 return 执行：
+  // ui=off 的执行同样接管清理责任，旧实例不会残留。）
   if (new URLSearchParams(window.location.search).get('meow-smooth-ui') === 'off') {
     console.log('[meow-smooth] UI injection OFF (meow-smooth-ui=off) — native UI only')
     return
   }
-  // CSS 常驻全局（折叠由 data 属性驱动，规则在即生效）。
+  // 服务可用性前置检查（原在监听器安装之后）：缺失时不留下"半安装"状态
+  // ——要么完整安装（拆除函数挂 window），要么什么都不装。
+  const slots = ctx?.slots
+  if (slots === undefined || typeof slots.inject !== 'function') {
+    console.warn('[meow-smooth] slots service unavailable; sidebar auto-collapse disabled')
+    return
+  }
+  const layout = ctx?.layout as ILayout | undefined
+  if (layout === undefined || typeof layout.toggleSidebar !== 'function') {
+    console.warn('[meow-smooth] layout service unavailable; sidebar auto-collapse disabled')
+    return
+  }
+  // CSS 常驻全局（折叠由 data 属性驱动，规则在即生效）。先移除上一份同
+  // 标记样式（双实例时期每次热替换都追加一份，无限堆积）。
+  document.querySelector('style[data-meow-fold-css]')?.remove()
   const style = document.createElement('style')
   style.dataset.meowFoldCss = 'true'
   style.textContent = FOLD_CSS
   document.head.appendChild(style)
+  disposers.push(() => { style.remove() })
 
   // 禁止页面缩放（需求 3）：viewport meta + iOS 捏合拦截。
   lockViewport()
-  document.addEventListener('gesturestart', (e) => e.preventDefault())
-  document.addEventListener('gesturechange', (e) => e.preventDefault())
+  const onGestureStart = (e: Event): void => { e.preventDefault() }
+  const onGestureChange = (e: Event): void => { e.preventDefault() }
+  document.addEventListener('gesturestart', onGestureStart)
+  document.addEventListener('gesturechange', onGestureChange)
+  disposers.push(() => {
+    document.removeEventListener('gesturestart', onGestureStart)
+    document.removeEventListener('gesturechange', onGestureChange)
+  })
   // 电脑端禁止/缓解页面缩放（需求 15）：拦截 Ctrl 缩放手势/按键 +
   // 缩放偏离检测提示条（桌面浏览器缩放是浏览器级行为，JS 尽力而为）。
-  lockDesktopZoom()
+  disposers.push(lockDesktopZoom())
   // 手机端设置页改造（需求 16）：全窗口面板 + 边栏图标竖列/滑出展开状态机。
-  installSettingsMobile()
+  disposers.push(installSettingsMobile())
 
   // 失焦折叠（需求 1）：进出卡片判定 + 点击兜底展开 + 触屏 Enter 换行。
   // 幂等：重复监听时各分支先查状态再动作。
   document.addEventListener('focusin', onFocusIn)
+  // 程序化聚焦抑制（需求⑳）：会话切换自动聚焦的 textarea 立即撤焦，
+  // 键盘压根不弹（capture 阶段先于官方 unlock effect 的后续逻辑）。
+  supTrace('registered')
+  document.addEventListener('focusin', suppressFocusIn, { capture: true })
+  document.documentElement.dataset.meowApplyStage = 'suppressor-registered'
   document.addEventListener('focusout', onFocusOut)
   document.addEventListener('pointerdown', onPointerDownCapture, { capture: true })
   document.addEventListener('keydown', onKeyDownCapture, { capture: true })
@@ -1319,6 +1873,16 @@ export function apply(ctx: any): void {
   // 模式图标点击展开/收起（需求 4）：capture 先收起别处的，冒泡再切换本尊。
   document.addEventListener('click', onModeLabelDismiss, { capture: true })
   document.addEventListener('click', onModeLabelToggle)
+  disposers.push(() => {
+    document.removeEventListener('focusin', onFocusIn)
+    document.removeEventListener('focusin', suppressFocusIn, { capture: true })
+    document.removeEventListener('focusout', onFocusOut)
+    document.removeEventListener('pointerdown', onPointerDownCapture, { capture: true })
+    document.removeEventListener('keydown', onKeyDownCapture, { capture: true })
+    document.removeEventListener('click', onDocumentClickCapture, { capture: true })
+    document.removeEventListener('click', onModeLabelDismiss, { capture: true })
+    document.removeEventListener('click', onModeLabelToggle)
+  })
 
   // 菜单开合同步（横向滑动防裁剪 + 位置保持）：document 级观察
   // aria-expanded 变化（点击/键盘/程序关闭全覆盖）；childList 兜底
@@ -1347,12 +1911,17 @@ export function apply(ctx: any): void {
     attributeFilter: ['aria-expanded'],
     childList: true,
   })
+  disposers.push(() => { menuGuard?.disconnect() })
 
   // 橡皮筋抑制（需求 12）：touchstart 定位滚动祖先 + touchmove 边界拦截
   // （passive:false 才能 preventDefault）。CSS overscroll-behavior 已覆盖
   // 现代浏览器，这里是旧 iOS/安卓的兜底。
   document.addEventListener('touchstart', onTouchStartOverscroll, { passive: true })
   document.addEventListener('touchmove', onTouchMoveOverscroll, { passive: false })
+  disposers.push(() => {
+    document.removeEventListener('touchstart', onTouchStartOverscroll)
+    document.removeEventListener('touchmove', onTouchMoveOverscroll)
+  })
 
 
 
@@ -1364,24 +1933,56 @@ export function apply(ctx: any): void {
   // 时键盘才打开"；打字中（无转换）绝不干预。
   window.visualViewport?.addEventListener('resize', syncIme)
   window.visualViewport?.addEventListener('scroll', pinBar)
+  let furlTick = 0
   if (isCoarsePointer()) {
-    window.setInterval(syncIme, 500)
+    // 500ms 轮询（IME 条 + 功能⑱折叠同步）——边栏循环动画 bug 的主角：
+    // 双实例时期两个此定时器带着分歧状态互踢 furl 标记。必须可拆除。
+    furlTick = window.setInterval(() => { syncIme(); syncSidebarFurl() }, 500)
   }
-
-  const slots = ctx?.slots
-  if (slots === undefined || typeof slots.inject !== 'function') {
-    console.warn('[meow-smooth] slots service unavailable; sidebar auto-collapse disabled')
-    return
+  disposers.push(() => {
+    window.visualViewport?.removeEventListener('resize', syncIme)
+    window.visualViewport?.removeEventListener('scroll', pinBar)
+    if (furlTick !== 0) window.clearInterval(furlTick)
+  })
+  // 功能⑱：layout 就绪才允许折叠（两态的"展开"依赖 toggleSidebar，服务
+  // 缺失时绝不能把用户入口藏掉）。小方块常驻 body（CSS 默认 display:none，
+  // furl 态才显示）。点击按模式分流：竖条底部无插件按钮 → 两态，直接
+  // 展开完整侧边栏；有插件按钮 → 三态，按一下先唤出细竖条（插件按钮
+  // 可达），展开交给竖条顶部原生 toggle 接棒，收起后自动折回小方块。
+  layoutReady = true
+  // 需求⑲ 手机端边缘手势两段式抽屉：三档停留态全为官方原生态，插件只
+  // 拥有过渡期（解除 furl + rAF 写轨道宽，rail 本体直接跟手）。依赖上面
+  // 已就绪的服务。
+  gestureApi = installSidebarGesture({
+    layout,
+    frameElement,
+    setFurled,
+    isFurled: furlRoot,
+    isCoarsePointer,
+  })
+  // 手势模块平时自管双实例（新装先拆旧）；这里补登记兜"本实例整体拆除"
+  // 场景（如热替换后服务缺失半途退出）：连手势监听一起清干净。
+  disposers.push(() => { (w.__meowSmoothGestureDispose as (() => void) | undefined)?.() })
+  const onFabClick = (): void => {
+    if (railHasExtraButtons()) {
+      railRevealed = true
+      setFurled(false)
+      return
+    }
+    setFurled(false)
+    layout.toggleSidebar()
   }
-  const layout = ctx?.layout as ILayout | undefined
-  if (layout === undefined || typeof layout.toggleSidebar !== 'function') {
-    console.warn('[meow-smooth] layout service unavailable; sidebar auto-collapse disabled')
-    return
-  }
+  sidebarFab().addEventListener('click', onFabClick)
+  // FAB 元素跨实例复用（querySelector 命中即返回）——不拆旧监听的话，一次
+  // 点按会触发 N 个实例的 handler（两态模式连点 N 次 toggle = 开了又关）。
+  disposers.push(() => { sidebarFab().removeEventListener('click', onFabClick) })
+  syncSidebarFurl()
   const sessions = ctx?.sessions as { open?: (sessionId: string) => void; refresh?: () => Promise<void> } | undefined
   // 手机端：侧边栏展开时点击右侧空间 → 自动收起（click 而非 pointerdown，
   // 见 onClickDismissSidebar 注释）。
-  document.addEventListener('click', (event) => { onClickDismissSidebar(event, layout) }, { capture: true })
+  const onDismissClick = (event: MouseEvent): void => { onClickDismissSidebar(event, layout) }
+  document.addEventListener('click', onDismissClick, { capture: true })
+  disposers.push(() => { document.removeEventListener('click', onDismissClick, { capture: true }) })
   // 审批/提问提醒卡片（需求 12/13）：host 轮询 + 本地 pending 汇报合并。
   // sessions 不可用时跳转回调为 undefined（卡片仍显示，提示手动切换）。
   let openSessionFn: ((sessionId: string) => void) | undefined
@@ -1394,10 +1995,11 @@ export function apply(ctx: any): void {
       refreshSessionsFn = () => sessions.refresh()
     }
   }
-  installPendingBanner(openSessionFn, refreshSessionsFn)
+  disposers.push(installPendingBanner(openSessionFn, refreshSessionsFn))
   // 通知模块（需求 15）：页面内系统通知 + PWA/SW 桥。SW notificationclick
   // 的跳转指令与横幅跳转共用同一回调。
   notifyHandle = installNotifyClient({ openSession: openSessionFn })
+  disposers.push(() => { notifyHandle?.dispose() })
   slots.inject('conversation.composer.dock', () => slots.register({
     name: 'conversation.composer.dock',
     id: 'meow-smooth',
@@ -1407,4 +2009,13 @@ export function apply(ctx: any): void {
       reportPending: reportLocalPending,
     }),
   }, FoldDock))
+
+  // 打包挂 window：下一次模块执行（热替换/rev 更新）在入口调用，拆除本
+  // 实例全部运行期资源（见 apply 入口注释）。单项失败不阻断其余拆除。
+  w.__meowSmoothClientDispose = (): void => {
+    for (const fn of disposers.splice(0)) {
+      try { fn() } catch { /* 尽力而为 */ }
+    }
+    delete w.__meowSmoothClientDispose
+  }
 }

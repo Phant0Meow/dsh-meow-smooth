@@ -40,8 +40,10 @@ export interface CompletionEvent {
   kind?: 'completed' | 'failed'
   /** failed 专有：失败摘要（LlmFailure.message 截断到 120 字符）。 */
   message?: string
-  /** failed 专有：失败码（如 PI_AI_ERROR；未知错误为 UNKNOWN）。 */
+  /** failed 专有：失败码（如 PI_AI_ERROR、RATE_LIMIT；未知错误为 UNKNOWN）。 */
   code?: string
+  /** failed 专有：会话展示名（横幅卡片用；空名客户端回退"未命名会话"）。 */
+  title?: string
 }
 
 /** 推送载荷（SW 端透传 showNotification 参数）。 */
@@ -496,6 +498,7 @@ const pushOnce = (key: string, fn: () => void): void => {
             const turn = typeof data?.turn === 'number' ? data.turn : 0
             const rawMessage = typeof reason.error?.message === 'string' ? reason.error.message : ''
             const code = typeof reason.error?.code === 'string' ? reason.error.code : ''
+            const title = sessionTitle(sessionId)
             const item: CompletionEvent = {
               id: `${sessionId}:${turn}:error`,
               sessionId,
@@ -506,10 +509,10 @@ const pushOnce = (key: string, fn: () => void): void => {
                 ? { message: rawMessage.length > 120 ? `${rawMessage.slice(0, 120)}…` : rawMessage }
                 : {}),
               ...(code !== '' ? { code } : {}),
+              ...(title !== '' ? { title } : {}),
             }
             completions.push(item)
             if (completions.length > EVENTS_CAP) completions.shift()
-            const title = sessionTitle(sessionId)
             const payload: PushPayload = {
               kind: 'failed',
               title: title === '' ? '未命名会话' : title,
@@ -640,6 +643,42 @@ const pushOnce = (key: string, fn: () => void): void => {
               res.end('{"error":"bad json"}')
             }
           })
+        },
+      },
+      {
+        kind: 'exact',
+        path: '/plugins/meow-smooth/debug-fail',
+        handler: (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
+          // 调试：手动注入一条模拟失败事件，走真实队列 + 推送决策链——
+          // 不用等真实的 LLM 错误就能端到端验证通知/卡片是否活着。
+          // 只入内存队列（TTL 10 分钟），不碰任何会话数据。
+          if ((req as { method?: string })?.method !== 'POST') {
+            res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
+            res.end('{"error":"method not allowed"}')
+            return
+          }
+          const item: CompletionEvent = {
+            id: `debug:${Date.now()}`,
+            sessionId: 'debug-session',
+            toolCalls: 0,
+            at: Date.now(),
+            kind: 'failed',
+            message: '【调试】模拟回合失败——验证通知链路（可忽略）',
+            code: 'DEBUG',
+            title: '调试会话（可忽略）',
+          }
+          completions.push(item)
+          if (completions.length > EVENTS_CAP) completions.shift()
+          const payload: PushPayload = {
+            kind: 'failed',
+            title: '调试会话（可忽略）',
+            body: '运行失败：【调试】模拟回合失败——验证通知链路',
+            tag: `f:${item.id}`,
+            sessionId: item.sessionId,
+          }
+          pushOnce(item.id, () => { void deliver(payload) })
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: true, id: item.id }))
         },
       },
       {

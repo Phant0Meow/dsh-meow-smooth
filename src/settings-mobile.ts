@@ -209,21 +209,33 @@ const panelObserver = new MutationObserver(() => {
 })
 
 /**
- * 安装手机端设置页改造（client.ts apply 调用）。
- * 零清理约定与模块内其他功能一致（页面生命周期内常驻，HMR 重载幂等）。
+ * 安装手机端设置页改造（client.ts apply 调用）。返回拆除函数（样式/
+ * matchMedia/面板观察者/点击拦截）——client.ts 单实例拆除协议登记用，
+ * 模块热替换时旧实例资源随协议整体清理，不再堆积。
  */
-export function installSettingsMobile(): void {
+export function installSettingsMobile(): () => void {
+  // 先移除上一份同标记样式（热替换重装时避免 <head> 无限堆积副本）。
+  document.querySelector('style[data-meow-smooth-settings-css]')?.remove()
   const style = document.createElement('style')
   style.dataset.meowSettingsCss = 'true'
   style.textContent = SETTINGS_CSS
   document.head.appendChild(style)
 
-  narrowQuery = window.matchMedia(BREAKPOINT)
-  narrowQuery.addEventListener('change', applyMode)
+  const mq = window.matchMedia(BREAKPOINT)
+  narrowQuery = mq
+  const onNarrowChange = (): void => { applyMode() }
+  mq.addEventListener('change', onNarrowChange)
   panelObserver.observe(document.body, { subtree: true, childList: true })
   document.addEventListener('click', onSettingsClickCapture, { capture: true })
 
   // 初始扫描：插件在设置面板已打开时热重载的兜底。
   panel = findSettingsPanel()
   applyMode()
+
+  return (): void => {
+    style.remove()
+    mq.removeEventListener('change', onNarrowChange)
+    panelObserver.disconnect()
+    document.removeEventListener('click', onSettingsClickCapture, { capture: true })
+  }
 }
