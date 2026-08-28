@@ -58,7 +58,7 @@ export const name = 'meow-smooth'
 /** host 半边功能版本标记（/pending 响应带出，客户端可探测运行实例的
  *  host 是否含某能力——如失败事件需要 v0.4.0+）。发版时随 package.json
  *  的 version 一并更新。 */
-export const HOST_VERSION = '0.5.0'
+export const HOST_VERSION = '0.6.0'
 
 /** 必需服务声明：sessions 由 client-runtime 提供（dsh-femwa 同款声明）。
  *  webServer 必须显式声明（2026-08-20 实测）：rc.6 的 include 装配下
