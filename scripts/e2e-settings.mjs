@@ -3,7 +3,7 @@
 //  1. 设置浮层全窗口显示（面板 rect = viewport，无空隙）；
 //  2. 边栏收成 56px 图标竖列（宽度与主界面 rail 一致，标签隐藏）；
 //  3. 点边栏图标 → 不切标签页（aria-current 不动），边栏滑出到 188px；
-//  4. 展开态点边栏按钮 → 正常切换标签页；
+//  4. 展开态点边栏按钮 → 正常切换标签页，切换完成边栏自动折回 56px；
 //  5. 展开态点右侧空白 → 边栏收回 56px，不切页；
 //  6. 桌面 1280px：无属性注入、面板 800px、点边栏立即切页、点空白不收。
 // 用法：node scripts/e2e-settings.mjs [url]（默认 http://127.0.0.1:3081）
@@ -146,20 +146,34 @@ await send('Page.captureScreenshot', { format: 'png' }).then((r) => {
   writeFileSync(join(SHOTS, 'settings-mobile-expanded.png'), Buffer.from(r.data, 'base64'))
 })
 
-// 展开态再点第 2 个按钮：正常切换标签页。
+// 展开态再点第 2 个按钮：正常切换标签页，且切换完成后边栏自动折叠。
 await evalJs(`document.querySelectorAll('${NAV} button')[1].click()`)
-await sleep(200)
+await sleep(350) // 220ms 折叠过渡
 const m3 = await evalJs(`(function(){
   const panel = ${getNav}
   const nav = document.querySelector('${NAV}')
   return {
     attr: panel.getAttribute('data-meow-smooth-settings'),
+    navW: getComputedStyle(nav).width,
     secondCurrent: nav.querySelectorAll('button')[1].getAttribute('aria-current'),
   }
 })()`)
 console.log('mobile-state-3 =', JSON.stringify(m3))
 check('5. 展开态点按钮 → 切换标签页', m3.secondCurrent === 'true')
-check('5. 切换后保持展开态', m3.attr === 'expanded')
+check('5. 切换后边栏自动折叠（56px）', m3.attr === 'collapsed' && m3.navW === '56px')
+
+// 自动折叠后再点边栏按钮重新展开（画到 expanded，供下一步测点空白收回）：
+await evalJs(`document.querySelectorAll('${NAV} button')[0].click()`)
+await sleep(350)
+const m3b = await evalJs(`(function(){
+  const panel = ${getNav}
+  return {
+    attr: panel.getAttribute('data-meow-smooth-settings'),
+    secondCurrent: document.querySelectorAll('${NAV} button')[1].getAttribute('aria-current'),
+  }
+})()`)
+console.log('mobile-state-3b =', JSON.stringify(m3b))
+check('5b. 重新展开（图标点击回归）且未切页', m3b.attr === 'expanded' && m3b.secondCurrent === 'true')
 
 // 展开态点右侧空白（header 区域，非交互元素）：收回，不切页。
 await evalJs(`(function(){

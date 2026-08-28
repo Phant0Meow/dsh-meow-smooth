@@ -15,6 +15,8 @@
  *  5. 边栏完整状态下点边栏按钮：正常切换标签页。
  *  6. 边栏完整状态下点右侧空间（非交互元素）：不切换标签页，边栏收回
  *     细细的版本。
+ *  7. 边栏完整状态下切换标签页（点边栏按钮切换右侧分区）：切换完成后
+ *     边栏自动折回细细的版本，不用再手动点空白收回。
  *
  * 状态机：挂在设置面板元素上的 data-meow-smooth-settings 属性
  *   absent    = 桌面/宽屏，官方原样；
@@ -209,6 +211,33 @@ const panelObserver = new MutationObserver(() => {
 })
 
 /**
+ * 标签页切换自动折叠观察（需求 16 补充）：展开态下切了设置分区就折回。
+ * 切换信号 = 左侧 nav 按钮的 aria-current 标记移动——官方用它在按钮间
+ * 标记当前激活分区（e2e 亦以它断言切页），且与右侧分区内容渲染同属
+ * React commit，marker 动 = 右侧区域标签页确实已切换。此时直接折回，
+ * 用户无需再手动点空白。
+ *
+ * 为何选 aria-current 而不是"点完按钮延时收起"：
+ *  - 点击当前已激活分区（aria-current 不动）属于"没切换"，边栏应保持；
+ *  - 收起态点按钮只展开不切页（capture 拦截），同样不触发；
+ *  - marker 变化是切页完成的确定性落点，不依赖切页耗时与定时器猜时机。
+ */
+const tabObserver = new MutationObserver((records) => {
+  if (panel === null || narrowQuery?.matches !== true) return
+  if (panel.getAttribute(SETTINGS_ATTR) !== 'expanded') return
+  const nav = panel.querySelector(':scope > nav')
+  if (nav === null) return
+  for (const record of records) {
+    // 只认 nav 内的 aria-current 变化（右侧内容区或页面其它元素的同名
+    // 属性变化不理会）；任一条命中即切页完成 → 折叠。
+    if (record.attributeName === 'aria-current' && nav.contains(record.target)) {
+      panel.setAttribute(SETTINGS_ATTR, 'collapsed')
+      return
+    }
+  }
+})
+
+/**
  * 安装手机端设置页改造（client.ts apply 调用）。返回拆除函数（样式/
  * matchMedia/面板观察者/点击拦截）——client.ts 单实例拆除协议登记用，
  * 模块热替换时旧实例资源随协议整体清理，不再堆积。
@@ -226,6 +255,13 @@ export function installSettingsMobile(): () => void {
   const onNarrowChange = (): void => { applyMode() }
   mq.addEventListener('change', onNarrowChange)
   panelObserver.observe(document.body, { subtree: true, childList: true })
+  // 标签页切换折叠观察：全文档监听 aria-current（nav 动态挂载，无法直接
+  // 挂在 nav 上），回调内按"target 是否在 nav 内"过滤，见 tabObserver。
+  tabObserver.observe(document.body, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['aria-current'],
+  })
   document.addEventListener('click', onSettingsClickCapture, { capture: true })
 
   // 初始扫描：插件在设置面板已打开时热重载的兜底。
@@ -236,6 +272,7 @@ export function installSettingsMobile(): () => void {
     style.remove()
     mq.removeEventListener('change', onNarrowChange)
     panelObserver.disconnect()
+    tabObserver.disconnect()
     document.removeEventListener('click', onSettingsClickCapture, { capture: true })
   }
 }
