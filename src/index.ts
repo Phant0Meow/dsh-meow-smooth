@@ -50,7 +50,7 @@ interface PendingQuestionView {
 }
 
 import { installNotifyHost } from './notify-host.ts'
-import { startCompressProxy, resolveTargetPort } from './compress-proxy.ts'
+import { startCompressProxy, resolveTargetPort, detectOfficialGzip } from './compress-proxy.ts'
 
 /** 插件名（loader 诊断用；与 cordis.patch.yml 的 name 一致）。 */
 export const name = 'meow-smooth'
@@ -87,7 +87,9 @@ export interface Config extends Record<string, any> {
   webhookAppUrl?: string
   /** 压缩代理（手机访问加速，默认关闭）：port=代理监听端口（默认 8444）；
    *  targetPort 自动从 dsh --port 解析。开启后把 tailscale serve 等反代
-   *  指向 127.0.0.1:<port>。零 dsh 本体改动，见 src/compress-proxy.ts。 */
+   *  指向 127.0.0.1:<port>。零 dsh 本体改动，见 src/compress-proxy.ts。
+   *  版本自适应：旧版 dsh 以 gzip 模式运行（现状）；dsh 0.1.2+ 官方已
+   *  内置 gzip，启动时自动探测并降级为纯透传（无需改任何配置）。 */
   proxy?: {
     enabled?: boolean
     port?: number
@@ -112,11 +114,16 @@ export function apply(ctx: any, config?: Config): void {
   const notify = installNotifyHost(ctx, config)
   // 压缩代理（config.proxy.enabled，默认关闭）：手机访问加速，零本体改动。
   // targetPort 自动从 dsh --port 解析；随插件 fiber 销毁（热重载/卸载即停）。
+  // 版本自适应 if 框架：先按旧版行为同步启动 gzip 模式（旧版 dsh 路径与
+  // 历史完全一致），随后异步探测官方 gzip（dsh 0.1.2+ webserver 内置）——
+  // 探测到即 setMode('passthrough') 切纯透传（同一 server，零断流），
+  // tailscale serve 指向无需变动；探测不到保持 gzip 模式（保守回退）。
   const proxyCfg = config?.proxy
   if (proxyCfg?.enabled === true) {
-    const server = startCompressProxy({
+    const targetPort = proxyCfg.targetPort ?? resolveTargetPort()
+    const { server, setMode } = startCompressProxy({
       port: proxyCfg.port ?? 8444,
-      targetPort: proxyCfg.targetPort ?? resolveTargetPort(),
+      targetPort,
     })
     if (typeof ctx.effect === 'function') {
       // cordis effect 语义：execute 立即执行，返回的 disposer 在 fiber 卸载时
@@ -127,6 +134,14 @@ export function apply(ctx: any, config?: Config): void {
         if (typeof server.closeAllConnections === 'function') server.closeAllConnections()
       }, 'meow-smooth: compress proxy')
     }
+    void detectOfficialGzip(targetPort).then((officialGzip) => {
+      if (officialGzip) {
+        setMode('passthrough')
+        console.log('[meow-smooth] official dsh gzip detected — proxy switched to passthrough (phone link unchanged)')
+      } else {
+        console.log('[meow-smooth] no official gzip on dsh (legacy) — proxy keeps gzip compression')
+      }
+    })
   }
   const pending = new Map<string, PendingApprovalView>()
   const pendingQuestions = new Map<string, PendingQuestionView>()
