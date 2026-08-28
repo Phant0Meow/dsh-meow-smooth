@@ -956,26 +956,40 @@ function syncIme(): void {
   }
 }
 
-/** 聚焦展开后的可视性修正兜底：键盘就位后若 textarea 底部仍在可视视口
- *  下方（键盘上缘之下），把可纵向滚动的祖先链向上滚、内层优先分配——
+/** 聚焦展开后的可视性修正兜底：键盘就位后若卡片底部仍在可视视口下方
+ *  （键盘上缘之下），把可纵向滚动的祖先链向上滚、内层优先分配——
  *  覆盖"会话页聊天记录长、scrollBody 有余量"的场景。新会话页壳无任何
  *  有余量的滚动祖先（实测），那时只能依赖原生聚焦 reveal（配合瞬时
  *  展开保证几何正确）。幂等：修正完成后 needed≤0 自然不再写。
- *  只在 composer textarea 持焦时动作；visualViewport 缺席直接放弃。 */
+ *  只在 composer textarea 持焦时动作；visualViewport 缺席直接放弃。
+ *
+ *  量卡片不量 textarea（2026-08-28 猫猫报"电脑端长草稿选字滚动条狂跑、
+ *  选不到开头"的根因）：textarea 被内部滚动窗 [data-input-scroll] 裁剪，
+ *  草稿长、窗口停在上半段时 textarea 底边天然伸出视口底——那不是"被
+ *  键盘遮住"，恰是"用户正要看开头"的正常态（实测：40 行草稿 textarea
+ *  bottom=1204 而视口底=800，误判 needed=412 把输入窗内部拽下 412px）。
+ *  卡片底边不受内部滚动影响，才是"composer 是否可见"的真边界；桌面
+ *  无键盘，卡片完整可见时本函数恒为 no-op。 */
 function ensureComposerVisible(): void {
   const active = document.activeElement
   if (!(active instanceof HTMLTextAreaElement)) return
-  if (composerCardOf(active) === null) return
+  const card = composerCardOf(active)
+  if (card === null) return
   const vv = window.visualViewport
   if (vv === null || vv.height === 0) return
-  const rect = active.getBoundingClientRect()
+  const rect = card.getBoundingClientRect()
   // 键盘上缘（布局视口坐标）≈ visualViewport 底边；底部超出即被遮。
   let needed = Math.ceil(rect.bottom - (vv.offsetTop + vv.height)) + 8 // 8px 呼吸边距
   if (needed <= 0) return
   noteFold(`vis need=${needed}`)
   const chain: HTMLElement[] = []
+  // 内部滚动窗永远不进链（同一根因的另一半）：滚它救不了"卡片被键盘
+  // 遮住"，只会毁掉用户在输入框里的阅读位置；可见性余量应全部分配给
+  // 外层祖先——这才是本函数的本意。
+  const inner = active.closest('[data-input-scroll]')
   let node: Element | null = active.parentElement
   while (node !== null && node !== document.documentElement) {
+    if (node === inner) { node = node.parentElement; continue }
     if (node instanceof HTMLElement) {
       const oy = getComputedStyle(node).overflowY
       if ((oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1) chain.push(node)
@@ -1367,6 +1381,12 @@ function syncSidebarFurl(): void {
   const collapsed = frame.hasAttribute('data-sidebar-collapsed')
   if (lastRailCollapsed !== null && collapsed !== lastRailCollapsed) railRevealed = false
   lastRailCollapsed = collapsed
+  // 已回 0 档（collapsed+furled）＝三态中间态结束：rail⇄小方块之间
+  // data-sidebar-collapsed 全程不变，上面的转换检测清不掉 railRevealed
+  // ——留着它会让本函数在下一个 tick 走"不得重新折叠"分支强制解除
+  // furl，竖条"点外部收起后又立即弹回"（2026-08-28 猫猫报，3081 独有：
+  // 三态模式只有装了侧栏插件的实例在走，3080 两态从不置 railRevealed）。
+  if (collapsed && furlRoot()) railRevealed = false
   if (!narrow) gestureApi?.clearHold() // 离开窄屏（转宽屏/桌面）：窄档保持失效
   // 窄档停留（需求⑲手势拉出的原生 rail）与三态中间态一样是合法的收起
   // 停留态：不折回小方块，直到用户推回到 0（furl 分支会清 hold）。
