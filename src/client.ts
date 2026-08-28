@@ -1975,7 +1975,7 @@ export function apply(ctx: any): void {
   // URL 带 ?meow-smooth-ui=off 时跳过全部 UI 注入（CSS/锁缩放/设置改造/事件
   // 委托/横幅/通知 client 桥），界面完全原生；host 侧压缩代理/审计投影/pending
   // 路由不受影响（手机 HTTPS 入口仍由 8445 代理提供服务，无需重启 3080）。
-  // 录原生素材：手机访问 https://node.tailf4760e.ts.net/?meow-smooth-ui=off
+  // 录原生素材：手机访问 https://<tailscale 域名>/?meow-smooth-ui=off
   // 恢复优化版：去掉 query 刷新即可。（上方入口拆除已先于本 return 执行：
   // ui=off 的执行同样接管清理责任，旧实例不会残留。）
   if (new URLSearchParams(window.location.search).get('meow-smooth-ui') === 'off') {
