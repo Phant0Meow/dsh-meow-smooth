@@ -139,6 +139,7 @@ import { useEffect, useRef } from 'react'
 import { installNotifyClient, type NotifyItem } from './notify-client.ts'
 import { installSettingsMobile } from './settings-mobile.ts'
 import { installSidebarGesture } from './sidebar-gesture.ts'
+import { createBusyEnterHook, RunSendButton, type RunSendMode } from './run-send.tsx'
 
 /** 官方类型的最小本地声明（构建零 @deepseek-ai 依赖）。
  *
@@ -546,6 +547,47 @@ html[${IME_ROOT_ATTR}] [${FAB_ATTR}] {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* 运行时发送按钮，外观复刻官方 primary；恒显示，点了等价于输入框按一次回车，官方按 busyEnter 设置执行插话发送或排队。 */
+[data-meow-run-send] {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  /* 外观复刻官方 primary 发送按钮：信息蓝底 + 白图标（官方 css 契约）。 */
+  background: var(--dsw-alias-button-info-fill);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+  /* 与官方 primary 相同的行内上移对齐。 */
+  transform: translateY(-2px);
+  /* 排到 .trailing 末尾，紧贴官方发送/停止按钮（中间不再隔 model/meter）。 */
+  order: 10;
+  padding: 0;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+[data-meow-run-send]:hover:not(:disabled):not([data-meow-idle]) {
+  background: var(--dsw-alias-button-info-hover);
+}
+/* 非运行灰度态，仍可点击，仅提示当前不可插话；disabled 空草稿继续用透明降级。 */
+[data-meow-run-send][data-meow-idle] {
+  opacity: 0.4;
+  background: var(--dsw-alias-button-info-fill);
+  cursor: pointer;
+}
+[data-meow-run-send]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+[data-meow-run-send] svg {
+  width: 16px;
+  height: 16px;
 }
 `
 
@@ -1866,7 +1908,7 @@ function jumpToSession(item: MergedItem, attempt = 0): void {
   }
   if (thrown !== null) {
     if (attempt < 3) {
-      const retry = (): void => window.setTimeout(() => { jumpToSession(item, attempt + 1) }, 800)
+      const retry = (): void => { window.setTimeout(() => { jumpToSession(item, attempt + 1) }, 800) }
       if (attempt === 0 && refreshSessions !== undefined) {
         // 首轮失败先刷新列表（手机端刚打开/列表未同步的常见原因）。
         void refreshSessions().then(retry).catch(retry)
@@ -1919,7 +1961,7 @@ function notifyItemsOf(merged: MergedItem[]): NotifyItem[] {
     .filter(item => item.kind !== 'failed')
     .map(item => ({
       sessionId: item.sessionId,
-      kind: item.kind,
+      kind: item.kind as 'approval' | 'question' | 'plan-review',
       id: item.kind === 'approval' && item.approvalId !== undefined
         ? item.approvalId
         : `${item.sessionId}:${item.kind}`,
@@ -2108,7 +2150,7 @@ export function FoldDock({ session, onSessionSwitch, reportPending, useSessions 
 }
 
 /** 浏览器端插件体：注入 CSS + 事件委托 + 注册 composer.dock 隐形条目。 */
-export const inject = ['slots', 'layout', 'sessions']
+export const inject = ['slots', 'layout', 'sessions', 'conversation', 'settingsScope']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
@@ -2326,9 +2368,9 @@ export function apply(ctx: any): void {
   if (sessions === undefined || typeof sessions.open !== 'function') {
     console.warn('[meow-smooth] sessions service unavailable; banner jump disabled')
   } else {
-    openSessionFn = (sessionId: string) => { sessions.open(sessionId) }
+    openSessionFn = (sessionId: string) => { sessions.open?.(sessionId) }
     if (typeof sessions.refresh === 'function') {
-      refreshSessionsFn = () => sessions.refresh()
+      refreshSessionsFn = () => sessions.refresh!()
     }
   }
   disposers.push(installPendingBanner(openSessionFn, refreshSessionsFn))
@@ -2345,6 +2387,38 @@ export function apply(ctx: any): void {
       reportPending: reportLocalPending,
     }),
   }, FoldDock))
+  // 运行时发送按钮：登记到发送按钮旁的控件行，恒显示，运行时按 busyEnter 设置承担插话/排队，非运行等同回车发送。
+  // settingsScope 为可选服务，缺省时 useBusyEnter 回退 undefined（组件按 queue 兜底）。绑定在 apply 顶层执行一次：
+  // useSyncExternalStore 要求 subscribe 引用稳定，若放进 inject 回调每渲染重建会触发无限重渲染导致按钮消失。
+  const settingsScope = ctx?.settingsScope
+  const useBusyEnter = createBusyEnterHook(
+    settingsScope === undefined ? undefined : settingsScope.bind({ namespace: 'ui-conversation' }),
+  )
+  slots.inject('conversation.input.right', () => slots.register({
+    name: 'conversation.input.right',
+    id: 'meow-smooth-run-send',
+    order: 999,
+    inject: (sessionId: SessionId): {
+      submitMode: (mode: RunSendMode) => void
+      useBusyEnter: () => RunSendMode | undefined
+    } => {
+      // 服务缺失时降级为 no-op 提交而非抛错：inject 抛错会让 slot entry 崩溃（渲染边界吞掉并弃用该条目），按钮直接消失。
+      // 与 QueueDock 同构取 actx→conversation，但此处会话/服务偶发缺失不应让整个按钮消失，改为静默降级并告警。
+      const actx = ctx.sessions.scope(sessionId)
+      const conversation = actx?.get('conversation')
+      if (actx === undefined || conversation === undefined) {
+        console.warn(`[meow-smooth] run-send inject degraded for session "${sessionId}" (actx=${actx !== undefined}, conversation=${conversation !== undefined})`)
+        return {
+          submitMode: () => {},
+          useBusyEnter,
+        }
+      }
+      return {
+        submitMode: (mode: RunSendMode) => { conversation.input.for(actx).submit(mode) },
+        useBusyEnter,
+      }
+    },
+  }, RunSendButton))
 
   // 打包挂 window：下一次模块执行（热替换/rev 更新）在入口调用，拆除本
   // 实例全部运行期资源（见 apply 入口注释）。单项失败不阻断其余拆除。

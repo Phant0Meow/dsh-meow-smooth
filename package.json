@@ -44,6 +44,7 @@
   "scripts": {
     "prepare": "node build.mjs",
     "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
     "watch": "node build.mjs --watch",
     "link-workspace": "powershell -ExecutionPolicy Bypass -File scripts/link-workspace.ps1"
   },
@@ -51,6 +52,9 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.2.18",
+    "esbuild": "^0.25.0",
+    "typescript": "^7.0.2"
   }
 }

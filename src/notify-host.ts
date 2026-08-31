@@ -29,6 +29,19 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { resolveTargetPort } from './compress-proxy.ts'
 
+/** webServer 服务最小面（登记只读路由 + PWA 链接注入；register 返回 dispose）。 */
+interface HostWebServerFace {
+  register(route: {
+    kind: 'exact'
+    path: string
+    handler: (req: unknown, res: {
+      writeHead: (code: number, headers?: Record<string, string>) => void
+      end: (body?: string | Buffer) => void
+    }) => void
+  }): unknown
+  tapIndex(fn: (html: string) => string): unknown
+}
+
 /** 一条长任务完成/运行失败事件（/pending 路由 events 段的 wire 形状）。 */
 export interface CompletionEvent {
   /** 稳定去重 id：完成=`sessionId:turn`，失败=`sessionId:turn:error`（client
@@ -107,9 +120,10 @@ function sessionTitleFromEvents(events: unknown[] | undefined): string {
       return event.data.title
     }
   }
-  for (const event of events) {
+  for (const raw of events) {
+    const event = raw as { type?: string; data?: { content?: readonly { type?: string; text?: string }[] } } | undefined
     if (event?.type !== 'user/message') continue
-    const data = event.data as { content?: readonly { type?: string; text?: string }[] } | undefined
+    const data = event.data
     const text = data?.content
       ?.filter(block => block.type === 'text' && typeof block.text === 'string')
       .map(block => block.text as string)
@@ -605,10 +619,10 @@ const pushOnce = (key: string, fn: () => void): void => {
   const manifest = manifestSource()
   // rc.6 include 装配下 ctx.get 不命中未声明服务（实测 404）→ 先试
   // 属性访问（inject 已声明 webServer），再回退 ctx.get；两版 cordis 兼容。
-  let webServer: unknown
-  try { webServer = ctx.webServer } catch { webServer = undefined }
+  let webServer: HostWebServerFace | undefined
+  try { webServer = ctx.webServer as HostWebServerFace | undefined } catch { webServer = undefined }
   if (webServer === undefined && typeof ctx.get === 'function') {
-    try { webServer = ctx.get('webServer') } catch { webServer = undefined }
+    try { webServer = ctx.get('webServer') as HostWebServerFace | undefined } catch { webServer = undefined }
   }
   if (webServer !== undefined && typeof webServer.register === 'function') {
     const routes: { kind: 'exact'; path: string; handler: (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string | Buffer) => void }) => void }[] = [
@@ -681,7 +695,8 @@ const pushOnce = (key: string, fn: () => void): void => {
                 return
               }
               subscriptions = subscriptions.filter(item => item.endpoint !== sub.endpoint)
-              subscriptions.push(sub)
+              // sub.endpoint 上面已判非空 string；断言收窄以满足元素类型。
+              subscriptions.push(sub as { endpoint: string })
               saveSubscriptions()
               res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
               res.end('{"ok":true}')

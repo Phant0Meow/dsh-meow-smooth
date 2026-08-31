@@ -60,6 +60,18 @@ export const name = 'meow-smooth'
  *  的 version 一并更新。 */
 export const HOST_VERSION = '0.6.0'
 
+/** webServer 服务最小面（仅登记一批只读状态路由；注册返回 dispose）。 */
+interface WebServerFace {
+  register(state: {
+    kind: string
+    path: string
+    handler: (req: unknown, res: {
+      writeHead: (code: number, headers: Record<string, string>) => void
+      end: (body?: string) => void
+    }) => void
+  }): unknown
+}
+
 /** 必需服务声明：sessions 由 client-runtime 提供（dsh-femwa 同款声明）。
  *  webServer 必须显式声明（2026-08-20 实测）：rc.6 的 include 装配下
  *  ctx.get('webServer') 对未声明服务返回 undefined → 路由静默跳过
@@ -104,10 +116,10 @@ export function apply(ctx: any, config?: Config): void {
   // ctx.get(name) 读全局 store（未注册返回 undefined → 对应能力降级）。
   // rc.6 include 装配下 ctx.get 不命中未声明服务（实测 404）→ 先试
   // 属性访问（inject 已声明），再回退 ctx.get；两版 cordis 都兼容。
-  let webServer: unknown
-  try { webServer = ctx.webServer } catch { webServer = undefined }
+  let webServer: WebServerFace | undefined
+  try { webServer = ctx.webServer as WebServerFace | undefined } catch { webServer = undefined }
   if (webServer === undefined && typeof ctx.get === 'function') {
-    try { webServer = ctx.get('webServer') } catch { webServer = undefined }
+    try { webServer = ctx.get('webServer') as WebServerFace | undefined } catch { webServer = undefined }
   }
   const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : undefined
   // 通知模块（需求 15）：长任务完成队列 + PWA 资源 + Web Push 推送器。
@@ -266,7 +278,8 @@ export function apply(ctx: any, config?: Config): void {
   try {
     if (sessions !== undefined && typeof sessions.list === 'function') {
       for (const session of sessions.list()) {
-        const events: unknown[] | undefined = session?.events
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 宿主会话事件结构未输入
+        const events: any[] | undefined = session?.events
         if (!Array.isArray(events)) continue
         const decided = new Set<string>()
         for (const event of events) {
