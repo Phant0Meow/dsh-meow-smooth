@@ -62,7 +62,7 @@ dsh plugin --profile web add github:Phant0Meow/dsh-meow-smooth
 
 一条命令装完即生效，自动挂载，重启 DSH web 后启用，无需手工编辑任何组合文件。包内含 `prepare` 脚本，安装时自动编译，装完即用。
 
-> ⚠️ **过时**：npm 源安装 `dsh plugin --profile web add meow-smooth` 已不再推荐，仅旧版本可用（`0.6.0` 的 `package.json` 带 BOM 会解析失败）。请改用上面的 GitHub 源。
+> npm 源 `dsh plugin --profile web add meow-smooth` 自 `0.6.1` 起恢复可用；`0.6.0` 及更早版本的 `package.json` 带 BOM 会解析失败，请避开。GitHub 源始终最新，推荐优先使用。
 
 ## 卸载
 
