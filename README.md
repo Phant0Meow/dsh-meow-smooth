@@ -56,19 +56,21 @@ dsh 的大会话在手机上看很慢——历史记录一次要拉好几 MB 的
 
 ## 安装
 
-前置要求：dsh（DeepSeek Harness）0.x、Node.js ≥ 22。
-
-```sh
-npm install   # esbuild（构建）+ web-push（运行时，仅通知功能需要）
-npm run build # 产出 lib/index.js（host）+ lib/client.js（browser）
+```powershell
+dsh plugin --profile web add github:better-er/dsh-meow-smooth
 ```
 
-构建**零 dsh 本体依赖**，不需要安装任何 `@deepseek-ai/*` 包。
+一条命令装完即生效，自动挂载，重启 DSH web 后启用，无需手工编辑任何组合文件。包内含 `prepare` 脚本，安装时自动编译，装完即用。
 
-装配（二选一）：
+> ⚠️ **过时**：npm 源安装 `dsh plugin --profile web add meow-smooth` 已不再推荐，仅旧版本可用（`0.6.0` 的 `package.json` 带 BOM 会解析失败）。请改用上面的 GitHub 源。
 
-- **profile 装配**：把 `cordis.patch.yml` 的 insert 条目加进目标 profile 的 `cordis.patch.yml`（或把本包加入 profile 的 bundles 列表），重启 dsh 生效；
-- **npm 包安装**：`npm pack` 产出 tgz，在 dsh profile 里 `npm install <tgz>`；浏览器端自动装配，host 侧经 `cordis.patch.yml` insert 条目加载。
+## 卸载
+
+```powershell
+dsh plugin --profile web remove meow-smooth
+```
+
+彻底移除，重启 DSH web 后不再加载。
 
 ## 通知功能（可选）
 
