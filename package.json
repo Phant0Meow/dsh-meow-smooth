@@ -48,7 +48,9 @@
     "link-workspace": "powershell -ExecutionPolicy Bypass -File scripts/link-workspace.ps1"
   },
   "dependencies": {
-    "web-push": "^3.6.7",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
     "esbuild": "^0.25.0"
   }
 }
