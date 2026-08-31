@@ -46,6 +46,8 @@ const clientOptions = {
   format: 'cjs',
   target: 'es2022',
   nodePaths,
+  // run-send.tsx 含 JSX；显式给 .tsx 指定 JSX loader。
+  loader: { '.tsx': 'tsx' },
   outfile: 'lib/client.js',
   // react 走 shell 单例（ModuleLoader 的 require 解析到 seed 里的 react），
   // 不能打进 bundle——否则双 React 实例会崩掉 slots 渲染。

@@ -176,7 +176,7 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
         }
         return registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(data.publicKey),
+          applicationServerKey: urlBase64ToUint8Array(data.publicKey) as Uint8Array<ArrayBuffer>,
         })
       })()
       if (subscription !== null) {
