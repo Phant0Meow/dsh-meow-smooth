@@ -57,11 +57,19 @@ dsh 的大会话在手机上看很慢——历史记录一次要拉好几 MB 的
 
 ## 安装
 
+**从 GitHub 安装**：源码在 `src/`，`lib/` 不入仓库，安装时 npm 会触发 `prepare` 脚本现场构建，装完即用。
+
 ```powershell
 dsh plugin --profile web add github:Phant0Meow/dsh-meow-smooth
 ```
 
-一条命令装完即生效，自动挂载，重启 DSH web 后启用，无需手工编辑任何组合文件。包内含 `prepare` 脚本，安装时自动编译，装完即用。
+**从 npm 安装**：包内已含构建产物 `lib/index.js` 与 `lib/client.js`，安装时不再构建。
+
+```powershell
+dsh plugin --profile web add meow-smooth
+```
+
+两种方式装完都会自动挂载，重启 DSH web 后启用，无需手工编辑任何组合文件。
 
 > npm 源 `dsh plugin --profile web add meow-smooth` 自 `0.6.1` 起恢复可用；`0.6.0` 及更早版本的 `package.json` 带 BOM 会解析失败，请避开。GitHub 源始终最新，推荐优先使用。
 
