@@ -4,11 +4,11 @@
  * 前端行为增强（纯插件，不改 dsh 本体）：
  *
  * 1. 输入框失焦折叠：composer 输入框（textarea）失去焦点时，把自适应高度
- *    折叠回 1 行；再次聚焦/点击时展开回草稿实际高度（滚动位置保留）。
+ *    折叠回 FOLD_LINES 行；再次聚焦/点击时展开回草稿实际高度（滚动位置保留）。
  *    机制：输入框高度 = mirror 撑高 + [data-input-scroll] 滚动窗
  *    （CSS max-height 14 行上限，见 InputBar.module.css .scroll）。折叠 =
- *    插件 CSS 把滚动窗 max-height 压到 1 行（30px = 24px line-height +
- *    4px 上 padding），不动 mirror/backdrop/textarea 三层结构；document
+ *    插件 CSS 把滚动窗 max-height 压到 FOLD_LINES 行，不动
+ *    mirror/backdrop/textarea 三层结构；document
  *    级 focusin/focusout 事件委托判定进出卡片（[data-composer-card]），
  *    pointerdown 兜底：点卡片任意处即展开（非交互区域顺带聚焦 textarea），
  *    scrollTop 存 WeakMap 展开时恢复（防视口错位）。
@@ -66,10 +66,11 @@
  *     30s 静默防重弹）：官方面板接管则隐藏；跳转失败/面板未接管（iOS
  *     实例重建限制）→ 卡片 fail 提示与恢复办法。纯通知，不做输入。
  *
- * 13. 折叠稳定性修复：折叠判定对比实测 1 行高（line-height + padding）
+ * 13. 折叠稳定性修复：折叠判定对比实测 N 行高（line-height × N + padding）
  *     而非滚动窗当前高度——旧逻辑把"无溢出"误判为"只有 1 行"，导致
  *     多行草稿（≤14 行内）永不折叠；折叠高度用 JS 实测写入 CSS 变量
- *     --meow-smooth-one-line（30px 兜底），任何主题都精确等于默认 1 行高；
+ *     --meow-smooth-fold-height（兜底值 = FOLD_LINES × 单行），任何主题都
+ *     精确等于默认 FOLD_LINES 行高（失焦折叠保留 3 行）；
  *     触屏点卡片外 click 兜底折叠（iOS/Android 点空白可能不移焦）。
  *
  * 14. 手机端禁用橡皮筋回弹：overscroll-behavior:none（html/body 与
@@ -167,10 +168,13 @@ const BAR_ATTR = 'data-meow-smooth-bar'
 /** 菜单打开标记（挂在 titleRow 上）：CSS 据此放开 overflow 防裁剪，
  *  JS 据此补偿 scrollLeft 保持原位不回跳。 */
 const HEADER_MENU_ATTR = 'data-meow-smooth-menu-open'
-/** 1 行高度兜底：24px line-height + 4px 上 padding（InputBar.module.css
- *  契约）。实际折叠高度由 JS 实测后写入 --meow-smooth-one-line 变量
- *  （任何主题/字号都精确等于"未输入时的默认 1 行高度"）。 */
-const FOLDED_MAX_HEIGHT = '30px'
+/** 失焦折叠保留的行数（默认 3 行）。 */
+const FOLD_LINES = 3
+/** 折叠高度兜底：单行 24px line-height + 6px padding（InputBar.module.css
+ *  契约）× FOLD_LINES。实际折叠高度由 JS 实测后写入
+ *  --meow-smooth-fold-height 变量（任何主题/字号都精确等于"未输入时的
+ *  默认 FOLD_LINES 行高度"）。 */
+const FOLDED_MAX_HEIGHT = '78px'
 /** 审批/提问提醒卡片元素标记（body 直接子级：fixed 顶部、z-index 9998、
  *  仅窄屏显示；IME 悬浮条 9999 优先。二者几乎不会同时出现——审批/提问
  *  pending 时 composer 被 takeover，无法打字）。 */
@@ -194,10 +198,11 @@ const HEADER_HIDDEN_ATTR = 'data-meow-smooth-header-hidden'
 const FOLD_CSS = `
 /* 过渡放基础态：折叠/展开双向都有动画。 */
 [data-composer-card] [data-input-scroll] { transition: max-height 150ms ease; }
-/* 折叠态：滚动窗压到 1 行，mirror/backdrop/textarea 结构不动。高度取
-   JS 实测的 1 行高（--meow-smooth-one-line），未测量时回退 30px 契约值。 */
+/* 折叠态：滚动窗压到 FOLD_LINES 行，mirror/backdrop/textarea 结构不动。
+   高度取 JS 实测的 N 行高（--meow-smooth-fold-height），未测量时回退
+   FOLDED_MAX_HEIGHT 契约值。 */
 [data-composer-card][${FOLD_ATTR}="${FOLD_COLLAPSED}"] [data-input-scroll] {
-  max-height: var(--meow-smooth-one-line, ${FOLDED_MAX_HEIGHT}) !important;
+  max-height: var(--meow-smooth-fold-height, ${FOLDED_MAX_HEIGHT}) !important;
 }
 /* 输入法激活：隐藏原生 header（悬浮条独占顶部，避免重复与遮挡）。
    imeActive 在桌面恒为 false，属性永不设置，此规则不生效。 */
@@ -661,7 +666,7 @@ function composerCardOf(target: EventTarget | null): HTMLElement | null {
   return target.closest('[data-composer-card]')
 }
 
-/** 展开卡片（幂等）：移除折叠属性 + 恢复滚动位置 + 清除动态 1 行高
+/** 展开卡片（幂等）：移除折叠属性 + 恢复滚动位置 + 清除动态折叠行高
  *  （回到 CSS 变量默认，避免旧主题残留）。instant=true 时跳过 150ms
  *  过渡直接到位——聚焦路径专用：浏览器/iOS 的"聚焦上滚/键盘让位 pan"
  *  按【聚焦瞬间】的盒子几何判定是否滚动，过渡中的半高盒子会被判成
@@ -672,7 +677,7 @@ function expandCard(card: HTMLElement, instant = false): void {
   if (card.getAttribute(FOLD_ATTR) !== FOLD_COLLAPSED) return
   noteFold(`exp${instant ? '!' : ''}`)
   card.removeAttribute(FOLD_ATTR)
-  card.style.removeProperty('--meow-smooth-one-line')
+  card.style.removeProperty('--meow-smooth-fold-height')
   const scroll = card.querySelector<HTMLElement>('[data-input-scroll]')
   if (instant && scroll !== null) {
     // 抑制本帧起的过渡：inline 覆盖 CSS transition，双 rAF 后恢复
@@ -691,10 +696,10 @@ function expandCard(card: HTMLElement, instant = false): void {
   }
 }
 
-/** 实测滚动窗 1 行内容高度（line-height + 上下 padding）。line-height
- *  为 'normal'（非 px）时按 font-size × 1.2 估算；全部失败回退 30px
- *  契约值。折叠高度与"1 行判定"共用此值，保证折叠后 = 真实默认高度。 */
-function oneLineHeight(scroll: HTMLElement): number {
+/** 实测滚动窗 N 行内容高度（line-height × N + 上下 padding）。line-height
+ *  为 'normal'（非 px）时按 font-size × 1.2 估算；全部失败回退 30px × N
+ *  契约值。折叠高度与"N 行判定"共用此值，保证折叠后 = 真实默认高度。 */
+function foldedHeight(scroll: HTMLElement, lines = FOLD_LINES): number {
   const style = getComputedStyle(scroll)
   const pt = parseFloat(style.paddingTop)
   const pb = parseFloat(style.paddingBottom)
@@ -704,26 +709,26 @@ function oneLineHeight(scroll: HTMLElement): number {
     const fs = parseFloat(style.fontSize)
     line = Number.isFinite(fs) && fs > 0 ? Math.round(fs * 1.2) : 20
   }
-  const total = line + pad
-  return total > 0 ? total : 30
+  const total = line * lines + pad
+  return total > 0 ? total : 30 * lines
 }
 
-/** 折叠卡片到 1 行（幂等）：保存 scrollTop、写入实测 1 行高变量、打折叠
- *  属性。草稿不足 1 行时跳过（折叠无视觉变化）。所有折叠入口（失焦 /
- *  触屏点卡片外）共用，行为一致。 */
+/** 折叠卡片到 FOLD_LINES 行（幂等）：保存 scrollTop、写入实测 N 行高变量、
+ *  打折叠属性。草稿不足 FOLD_LINES 行时跳过（折叠无视觉变化）。所有折叠
+ *  入口（失焦 / 触屏点卡片外）共用，行为一致。 */
 function collapseCard(card: HTMLElement): void {
   if (card.getAttribute(FOLD_ATTR) === FOLD_COLLAPSED) return
   noteFold('cld')
   const scroll = card.querySelector<HTMLElement>('[data-input-scroll]')
   if (scroll === null) return
-  const one = oneLineHeight(scroll)
-  // 判定"不足 1 行"必须对比实测 1 行高而非 scroll.clientHeight（那是
+  const h = foldedHeight(scroll)
+  // 判定"不足 N 行"必须对比实测 N 行高而非 scroll.clientHeight（那是
   // 被 mirror 撑高的当前多行高度——对比它会把所有无溢出草稿都当成
-  // "1 行"跳过折叠，正是折叠不稳定的根因）。
-  if (scroll.scrollHeight <= one + 1) return
+  // "N 行"跳过折叠，正是折叠不稳定的根因）。
+  if (scroll.scrollHeight <= h + 1) return
   scrollTops.set(scroll, scroll.scrollTop)
   scroll.scrollTop = 0
-  card.style.setProperty('--meow-smooth-one-line', `${one}px`)
+  card.style.setProperty('--meow-smooth-fold-height', `${h}px`)
   card.setAttribute(FOLD_ATTR, FOLD_COLLAPSED)
 }
 
