@@ -14,9 +14,10 @@
  *    pointerdown 兜底：点卡片任意处即展开（非交互区域顺带聚焦 textarea），
  *    scrollTop 存 WeakMap 展开时恢复（防视口错位）。
  *
- * 2. 手机端模型选择器折叠宽度：@media (max-width: 1023px) 把
- *    [data-slot="conversation.input.model"] 的 trigger 压到 96px、隐藏
- *    effort 文字（label 自带省略号）——trailing 不再把左边的按钮挤没。
+ * 2. composer 按钮行单行排布（2026-09-02 折叠屏，猫猫拍板）：.row 永不
+ *    换行（官方 flex-wrap:wrap 会让 trailing 整组掉到第二行）——trailing
+ *    放开收缩，宽度不足时模型名 label 先缩（官方 ellipsis）；极窄
+ *    （@container <460px，与官方权限 chip 图标化同阈）隐藏 effort 徽标。
  *
  * 3. 手机端禁止页面缩放：viewport meta 加 maximum-scale=1 +
  *    user-scalable=no、CSS touch-action: manipulation（防双击缩放）、
@@ -240,16 +241,29 @@ html[${IME_ROOT_ATTR}] [data-slot="conversation.session.header"] > header {
   border-bottom: 1px solid var(--dsw-alias-border-l2);
   pointer-events: none;
 }
-/* 手机端（< 1024px，dsh 布局断点 SIDEBAR_AUTO_COLLAPSE）：模型选择器
-   折叠宽度——trigger 压到 96px、隐藏 effort 文字；模型名 label 自带
-   ellipsis，超出自动省略。trailing 变窄后不再挤掉左侧按钮。 */
-@media (max-width: 1023px) {
-  [data-composer-card] [data-slot="conversation.input.model"] button[aria-haspopup="menu"] {
-    max-width: 96px;
-  }
+/* 猫猫拍板（2026-09-02 折叠屏）：composer 按钮行永不换行——官方 .row
+   flex-wrap:wrap 会让 trailing 整组（模型+圆环+发送）掉到第二行，非常丑。
+   改为单行排布：trailing 官方 flex:none 锁死整组，放开为可收缩后，宽度
+   不足的收缩余量全部流向模型名（官方 triggerLabel 自带 ellipsis 三件套，
+   trigger 官方 min-width:0，收缩即省略）；权限 chip 沿官方 @container
+   460px 图标化兜底。锚点 [hash]_row/_trailing 尾缀跨版本稳定（功能⑰锚法）。 */
+[data-composer-card] div[class*="_row"] {
+  flex-wrap: nowrap !important;
+}
+[data-composer-card] div[class*="_row"] div[class*="_trailing"] {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+}
+/* 极窄（composer 行 <460px，与官方权限 chip 图标化同阈值）：隐藏 effort
+   徽标与首 span 之外的其他文字 span，把宽度全留给模型名。 */
+@container (max-width: 460px) {
   [data-composer-card] [data-slot="conversation.input.model"] button[aria-haspopup="menu"] > span:not(:first-child) {
     display: none;
   }
+}
+/* 手机端（< 1024px，dsh 布局断点 SIDEBAR_AUTO_COLLAPSE）：header 相关
+   压缩规则。 */
+@media (max-width: 1023px) {
   /* Session log 按钮缩窄：只留下载图标，隐藏文字；去掉 min-width:111px
      与宽 padding（HeaderAction.module.css 契约）。 */
   [data-slot="conversation.session.header.utilities"] button span {
