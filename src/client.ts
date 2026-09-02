@@ -886,6 +886,10 @@ function onTouchStartOverscroll(event: TouchEvent): void {
       const sy = (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1
       const sx = (ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 1
       if (sy || sx) overscrollChain.push(node)
+      // 轴仲裁 latch 嫌疑（含 hidden 截断行——hidden 程序可滚，Chrome 合成器
+      // 视为潜在滚动目标锚定手势吞掉竖滑）：不进橡皮筋链，单独标记。
+      const sxLatch = (ox === 'auto' || ox === 'scroll' || ox === 'hidden') && node.scrollWidth > node.clientWidth + 1
+      if (sxLatch && !sy) axisHasXOnly = true
     }
     node = node.parentElement
   }
@@ -893,19 +897,18 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   if (scroller instanceof HTMLElement && scroller.scrollHeight > scroller.clientHeight + 1) {
     overscrollChain.push(scroller)
   }
-  // 轴仲裁初始化：链上有"x-only 容器"（横向有溢出余量、纵向没有）→ 竖滑
-  // 会被 Chrome latch 冻结，本手势交给轴仲裁接管。
+  noteFold(`os-ts chain=${overscrollChain.length} xOnly=${axisHasXOnly} exempt=${overscrollExempt} tgt=${target instanceof Element ? target.tagName : '?'}`, true)
+  // 轴仲裁初始化：y 链目标取链上第一个纵向可滚容器。
   axisPhase = 'undecided'
   axisLastT = 0
   axisVel = 0
   for (const node of overscrollChain) {
     const style = getComputedStyle(node)
     const oy = style.overflowY
-    const ox = style.overflowX
-    const sy = (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1
-    const sx = (ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 1
-    if (axisYNode === null && sy) axisYNode = node
-    if (sx && !sy) axisHasXOnly = true
+    if ((oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1) {
+      axisYNode = node
+      break
+    }
   }
 }
 
@@ -935,14 +938,19 @@ function onTouchMoveOverscroll(event: TouchEvent): void {
   lastTouchY = touch.clientY
   lastTouchX = touch.clientX
   if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return
-  // --- 轴仲裁（x-only 容器 latch 绕开）：见 onTouchStartOverscroll 注释。
-  //     竖向主导 → preventDefault（拦 Chrome 对表格的 latch）+ 手动滚 y 链；
-  //     横向主导 → 放行（表格自己原生横滚，有惯性）；未定 → 累计位移再判。 ---
+  // --- 轴仲裁（x-only/hidden 容器 latch 绕开）：竖向优先判轴（femGen 歪招
+  //     "直接判定 dy"——真机手指起手必有横向抖动，若按 |dy|>|dx| 判轴会先锁
+  //     x 再也出不来；dy 超 slop 即判竖向接管）。竖向 → preventDefault（拦
+  //     Chrome 的 latch）+ 手动滚 y 链（scrollYChain 对 cancelable=false 的
+  //     合成器接管事件同样有效——直接写 scrollTop 不依赖默认行为）；横向
+  //     主导 → 放行（表格自己原生横滚）；未定 → 累计位移再判。 ---
   if (axisHasXOnly && axisPhase !== 'x') {
-    if (axisPhase === 'undecided' && (Math.abs(dy) > 10 || Math.abs(dx) > 10)) {
-      axisPhase = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x'
-      axisLastT = performance.now()
-      axisVel = 0
+    if (axisPhase === 'undecided') {
+      if (Math.abs(dy) > 10) axisPhase = 'y'
+      else if (Math.abs(dx) > 24) axisPhase = 'x'
+      if (axisPhase !== 'undecided') {
+        noteFold(`os-axis=${axisPhase} dy=${Math.round(dy)} dx=${Math.round(dx)}`, true)
+      }
     }
     if (axisPhase === 'y') {
       const now = performance.now()

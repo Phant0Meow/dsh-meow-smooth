@@ -210,6 +210,53 @@ try {
   const rd = await evalJson(result)
   check(rd.pageDy > 50, 'D 正文空白竖滑 → 页面滚动（回归）', `页面Δ=${rd.pageDy}`)
 
+  // ===== E. hidden 截断行（工具调用/thinking 收起态复刻）竖滑 → 页面滚动 =====
+  // 工具行 = overflow:hidden + white-space:nowrap + 内容超宽（sw>cw）——
+  // Chrome 合成器视为潜在滚动目标 latch 手势吞掉竖滑。
+  await evalJson(`(() => {
+    let host = document.querySelector('[data-probe-hiddenrow]')
+    if (host !== null) { host.remove() }
+    host = document.createElement('div')
+    host.setAttribute('data-probe-hiddenrow', 'true')
+    const sc = [...document.querySelectorAll('*')].find(x => {
+      const cs = getComputedStyle(x)
+      return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && x.scrollHeight > x.clientHeight + 400 && x.clientHeight > 300
+    })
+    if (sc === undefined) return JSON.stringify({ ok: false })
+    // 锚定到当前视口中心（与表格注入同款）——prepend 到消息流最顶会被
+    // 定位钳制卡在 header 区，触点打不到。
+    const mid = document.elementFromPoint(195, Math.round(sc.clientHeight / 2))
+    const anchor = (mid !== null && mid.parentElement !== null) ? mid.parentElement : sc.firstElementChild
+    host.innerHTML = '<div style="overflow:hidden;white-space:nowrap;height:28px;line-height:28px;border:1px solid #886;padding:0 10px">PwshRun a very long tool call command line that overflows the row width massively and keeps going</div>'
+    if (anchor !== null && anchor !== sc.firstElementChild) anchor.before(host)
+    else sc.firstElementChild?.prepend(host)
+    return JSON.stringify({ ok: true })
+  })()`)
+  const e = await evalJson(`(() => {
+    const el = document.querySelector('[data-probe-hiddenrow] > div')
+    const sc = [...document.querySelectorAll('*')].find(x => {
+      const cs = getComputedStyle(x)
+      return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && x.scrollHeight > x.clientHeight + 400 && x.clientHeight > 300
+    })
+    const docTop = el.getBoundingClientRect().top + sc.scrollTop
+    sc.scrollTop = Math.max(60, Math.min(Math.round(docTop - sc.clientHeight / 2), Math.round(sc.scrollHeight - sc.clientHeight - 60)))
+    const r = el.getBoundingClientRect()
+    window.__slBefore = Math.round(sc.scrollTop)
+    return JSON.stringify({ ok: true, rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } })
+  })()`)
+  await swipe(e.rect, -1)
+  const dbg = await evalJson(`(() => {
+    const el = document.querySelector('[data-probe-hiddenrow] > div')
+    const sc = [...document.querySelectorAll('*')].find(x => {
+      const cs = getComputedStyle(x)
+      return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && x.scrollHeight > x.clientHeight + 400 && x.clientHeight > 300
+    })
+    return JSON.stringify({ ok: true, stillThere: el !== null, elRect: el ? (r => ({ y: Math.round(r.y), h: Math.round(r.height) }))(el.getBoundingClientRect()) : null, scNow: sc ? Math.round(sc.scrollTop) : null })
+  })()`)
+  console.log(`  E 诊断: ${JSON.stringify(dbg)}`)
+  const re = await evalJson(result)
+  check(re.pageDy > 50, 'E hidden 截断行竖滑 → 页面滚动（工具行场景）', `页面Δ=${re.pageDy}`)
+
   console.log(failed === 0 ? 'ALL PASS' : `${failed} FAIL`)
   if (failed > 0) process.exitCode = 1
 } catch (error) {
