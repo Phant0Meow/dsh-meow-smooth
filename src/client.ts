@@ -810,11 +810,15 @@ let axisLastT = 0
 let flingRaf = 0
 
 /** 沿链滚 y 向：找第一个"该方向还有余量"的容器滚之；全到边界=不滚
- *  （防回弹，与橡皮筋语义一致）。delta>0=内容上移（看下方）。 */
+ *  （防回弹，与橡皮筋语义一致）。delta>0=scrollTop 增大（手指上划，看
+ *  下方内容）→ 要求**下方**有余量；delta<0=scrollTop 减小（手指下划，看
+ *  上方内容）→ 要求**上方**有余量。⚠️方向别反：v1 把 -dy 代入后条件写成
+ *  互补反向——会话总停在顶/底，反向条件恒 false=真机全冻（e2e 只测中部
+ *  双向有余量，恰好掩盖）。 */
 function scrollYChain(delta: number): void {
   for (const node of overscrollChain) {
-    const canY = (delta < 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1)
-      || (delta > 0 && node.scrollTop > 0)
+    const canY = (delta > 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1)
+      || (delta < 0 && node.scrollTop > 0)
     if (canY) {
       node.scrollTop += delta
       return
@@ -878,6 +882,7 @@ function onTouchStartOverscroll(event: TouchEvent): void {
     return
   }
   let node: Element | null = target
+  let latchEl: HTMLElement | null = null
   while (node !== null && node !== document.documentElement) {
     if (node instanceof HTMLElement) {
       const style = getComputedStyle(node)
@@ -889,15 +894,29 @@ function onTouchStartOverscroll(event: TouchEvent): void {
       // 轴仲裁 latch 嫌疑（含 hidden 截断行——hidden 程序可滚，Chrome 合成器
       // 视为潜在滚动目标锚定手势吞掉竖滑）：不进橡皮筋链，单独标记。
       const sxLatch = (ox === 'auto' || ox === 'scroll' || ox === 'hidden') && node.scrollWidth > node.clientWidth + 1
-      if (sxLatch && !sy) axisHasXOnly = true
+      if (sxLatch && !sy) {
+        if (latchEl === null) latchEl = node
+        axisHasXOnly = true
+      }
     }
     node = node.parentElement
   }
+  // 表格单元格/代码块落点无条件仲裁接管（2026-09-02 真机 13×TD 全
+  // xOnly=false——真机表格容器的形态与桌面预期不符，具体结构待 dump 数据；
+  // 但 TD/TH/CODE 内竖划本来就该滚页面、横划放行原生，强制接管零风险）。
+  const tgtTag = target instanceof Element ? target.tagName : ''
+  if (tgtTag === 'TD' || tgtTag === 'TH' || tgtTag === 'CODE') axisHasXOnly = true
   const scroller = document.scrollingElement
   if (scroller instanceof HTMLElement && scroller.scrollHeight > scroller.clientHeight + 1) {
     overscrollChain.push(scroller)
   }
-  noteFold(`os-ts chain=${overscrollChain.length} xOnly=${axisHasXOnly} exempt=${overscrollExempt} tgt=${target instanceof Element ? target.tagName : '?'}`, true)
+  // TD/CODE 落点（真机表格/代码块场景）追加首个 latch 容器的实测形态——
+  // 真机表格结构与桌面预期可能不符（2026-09-02 真机 13×TD 全 xOnly=false）。
+  const tgt = target instanceof Element ? target : null
+  const dumpLatch = latchEl !== null && (tgt?.tagName === 'TD' || tgt?.tagName === 'CODE' || tgt?.tagName === 'TH')
+    ? ` latch=${latchEl.tagName}.${String(latchEl.className).slice(0, 24)} ox=${getComputedStyle(latchEl).overflowX} sw/c=${latchEl.scrollWidth}/${latchEl.clientWidth}`
+    : (tgt?.tagName === 'TD' || tgt?.tagName === 'CODE') && latchEl === null ? ' latch=NONE' : ''
+  noteFold(`os-ts chain=${overscrollChain.length} xOnly=${axisHasXOnly} exempt=${overscrollExempt} tgt=${tgt?.tagName ?? '?'}${dumpLatch}`, true)
   // 轴仲裁初始化：y 链目标取链上第一个纵向可滚容器。
   axisPhase = 'undecided'
   axisLastT = 0

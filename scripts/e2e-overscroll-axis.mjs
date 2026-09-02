@@ -257,6 +257,45 @@ try {
   const re = await evalJson(result)
   check(re.pageDy > 50, 'E hidden 截断行竖滑 → 页面滚动（工具行场景）', `页面Δ=${re.pageDy}`)
 
+  // ===== F. 会话顶部（scrollTop=0）、表格竖划（看下方）→ 页面滚动 =====
+  // scrollYChain 方向曾写反（delta=-dy 代入负号双重否定）：顶/底是会话的
+  // 常驻位置，反向条件在那里恒 false=真机全冻；中部测试（上下皆有余量）
+  // 掩盖之。表格注入到文档最顶 + scrollTop=0 复现真机常驻位。
+  await evalJson(`(() => {
+    document.querySelector('[data-probe-table-top]')?.remove()
+    const host = document.createElement('div')
+    host.setAttribute('data-probe-table-top', 'true')
+    const wrap = document.createElement('div')
+    wrap.className = 'md-table-wide'
+    let cells = ''
+    for (let c = 0; c < 10; c++) cells += '<th style="padding:6px 14px;border:1px solid #8888;white-space:nowrap">顶' + c + ' 标题内容加长版</th>'
+    let body = ''
+    for (let r2 = 0; r2 < 6; r2++) {
+      let tds = ''
+      for (let c = 0; c < 10; c++) tds += '<td style="padding:6px 14px;border:1px solid #6688;white-space:nowrap">T' + r2 + 'C' + c + ' 单元格内容加长版</td>'
+      body += '<tr>' + tds + '</tr>'
+    }
+    wrap.innerHTML = '<table style="border-collapse:collapse"><thead><tr>' + cells + '</tr></thead><tbody>' + body + '</tbody></table>'
+    host.appendChild(wrap)
+    const sc = [...document.querySelectorAll('*')].find(x => {
+      const cs = getComputedStyle(x)
+      return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && x.scrollHeight > x.clientHeight + 400 && x.clientHeight > 300
+    })
+    sc.firstElementChild?.prepend(host)
+    sc.scrollTop = 0
+    return JSON.stringify({ ok: true })
+  })()`)
+  await sleep(200)
+  const f = await evalJson(`(() => {
+    const el = document.querySelector('[data-probe-table-top] .md-table-wide')
+    const r = el.getBoundingClientRect()
+    window.__slBefore = 0
+    return JSON.stringify({ ok: true, rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } })
+  })()`)
+  await swipe(f.rect, -1)
+  const rf = await evalJson(result)
+  check(rf.pageDy > 50, 'F 会话顶部表格竖划（看下方）→ 页面滚动（方向语义）', `页面Δ=${rf.pageDy}`)
+
   console.log(failed === 0 ? 'ALL PASS' : `${failed} FAIL`)
   if (failed > 0) process.exitCode = 1
 } catch (error) {
