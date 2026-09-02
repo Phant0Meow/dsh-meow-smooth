@@ -346,6 +346,41 @@ try {
   const rh = await evalJson(result)
   check(rh.pageDy > 50, 'H 无截断 aria-expanded 行竖划 → 页面滚动（短命令 tool call）', `页面Δ=${rh.pageDy}`)
 
+  // ===== I. 侧栏会话行（role=treeitem，无截断）竖划 → 列表容器滚动 =====
+  // 猫猫：全局到处都有——边栏 session 列表、设置页页签，落点在可 click
+  // 位置竖划全冻。复刻=独立竖滚容器 + treeitem 行。
+  await evalJson(`(() => {
+    document.querySelector('[data-probe-sidebar]')?.remove()
+    const host = document.createElement('div')
+    host.setAttribute('data-probe-sidebar', 'true')
+    host.style.cssText = 'position:fixed;left:0;top:120px;width:300px;height:400px;overflow-y:auto;z-index:50;background:#223'
+    let rows = ''
+    for (let i = 0; i < 30; i++) {
+      rows += '<div role="treeitem" style="height:32px;line-height:32px;padding:0 12px;border-bottom:1px solid #448;white-space:nowrap;overflow:hidden;cursor:pointer">会话 ' + i + ' — project alpha</div>'
+    }
+    host.innerHTML = rows
+    document.body.appendChild(host)
+    return JSON.stringify({ ok: true })
+  })()`)
+  await sleep(200)
+  await evalJson(`(() => {
+    const el = document.querySelector('[data-probe-sidebar] [role="treeitem"]:nth-child(10)')
+    window.__sbBefore = Math.round(el.parentElement.scrollTop)
+    window.__tblBefore = -1
+    return JSON.stringify({ ok: true })
+  })()`)
+  const i = await evalJson(`(() => {
+    const el = document.querySelector('[data-probe-sidebar] [role="treeitem"]:nth-child(10)')
+    const r = el.getBoundingClientRect()
+    return JSON.stringify({ ok: true, rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } })
+  })()`)
+  await swipe(i.rect, -1)
+  const ri = await evalJson(`(() => {
+    const el = document.querySelector('[data-probe-sidebar]')
+    return JSON.stringify({ ok: true, pageDy: Math.round(el.scrollTop) - window.__sbBefore, tblDx: -1 })
+  })()`)
+  check(ri.pageDy > 20, 'I 侧栏会话行（treeitem）竖划 → 列表滚动', `列表Δ=${ri.pageDy}`)
+
   console.log(failed === 0 ? 'ALL PASS' : `${failed} FAIL`)
   if (failed > 0) process.exitCode = 1
 } catch (error) {

@@ -812,6 +812,9 @@ let flingRaf = 0
  *  单帧 dy 仅 2-3px，按帧判永远达不到阈值=慢划冻死、"时灵时不灵"。 */
 let axisStartX = 0
 let axisStartY = 0
+/** 落点祖先链上有 touch-action:none（femwa 画布等自定义手势区）→ 本手势
+ *  归自定义手势管，轴仲裁绝不接管（竖划=拖拽语义）。 */
+let axisExcluded = false
 
 /** 沿链滚 y 向：找第一个"该方向还有余量"的容器滚之；全到边界=不滚
  *  （防回弹，与橡皮筋语义一致）。delta>0=scrollTop 增大（手指上划，看
@@ -857,6 +860,7 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   // 轴仲裁状态重置（早退分支同样重置，防旧手势状态泄漏）；新触摸打断惯性。
   axisPhase = 'idle'
   axisHasXOnly = false
+  axisExcluded = false
   axisYNode = null
   if (flingRaf !== 0) {
     cancelAnimationFrame(flingRaf)
@@ -897,6 +901,9 @@ function onTouchStartOverscroll(event: TouchEvent): void {
       const sy = (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1
       const sx = (ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 1
       if (sy || sx) overscrollChain.push(node)
+      // 自定义手势区（touch-action:none，如 femwa 画布拖节点）→ 竖划是
+      // 拖拽语义，轴仲裁绝不能接管。
+      if (style.touchAction === 'none') axisExcluded = true
       // 轴仲裁 latch 嫌疑（含 hidden 截断行——hidden 程序可滚，Chrome 合成器
       // 视为潜在滚动目标锚定手势吞掉竖滑）：不进橡皮筋链，单独标记。
       const sxLatch = (ox === 'auto' || ox === 'scroll' || ox === 'hidden') && node.scrollWidth > node.clientWidth + 1
@@ -912,13 +919,16 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   // 但 TD/TH/CODE 内竖划本来就该滚页面、横划放行原生，强制接管零风险）。
   const tgtTag = target instanceof Element ? target.tagName : ''
   if (tgtTag === 'TD' || tgtTag === 'TH' || tgtTag === 'CODE') axisHasXOnly = true
-  // 可展开行（工具调用/thinking 收起态）落点强制接管（2026-09-02 真机二轮
-  // 实锤：行内容**是否截断**决定仲裁是否命中——长命令的行 xOnly=true 好了、
-  // 短命令的行 xOnly=false 依旧冻。行内容截断与否是碰运气，改用行为特征：
-  // aria-expanded 是官方折叠行的标准属性）。header/侧栏/弹层内的排除——
-  // 那些区域的竖滑有自己的语义（菜单滚动等）。
-  if (target.closest('[aria-expanded]') !== null
-    && target.closest('[data-slot="conversation.session.header"], [data-slot="sidebar"], [role="dialog"], [data-meow-smooth-pending], [data-meow-smooth-fab]') === null) {
+  // 可交互元素落点全局接管（2026-09-02 猫猫：全局到处都有——边栏会话行、
+  // 设置页页签、一切"可 click"位置竖划都被真机合成器吞掉）。判定=标准可
+  // 交互选择器（femGen round49"落点无关"思想的收敛版：先收敛到交互元素，
+  // 纯内容区保持原生链路）。竖向接管滚的是触点祖先链上第一个可滚容器
+  // （scrollYChain），侧栏列表/设置页容器都在链上自然生效。弹层（dialog/
+  // pending/FAB）内排除——弹层滚动有自己的容器与语义；touch-action:none
+  // 区域排除（画布拖拽）。
+  if (!axisExcluded
+    && target.closest('button, a, [role="button"], [role="treeitem"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], [role="switch"], label, summary, [aria-expanded]') !== null
+    && target.closest('[role="dialog"], [data-meow-smooth-pending], [data-meow-smooth-fab]') === null) {
     axisHasXOnly = true
   }
   const scroller = document.scrollingElement
