@@ -3,11 +3,12 @@
  *
  * 前端行为增强（纯插件，不改 dsh 本体）：
  *
- * 1. 输入框失焦折叠：composer 输入框（textarea）失去焦点时，把自适应高度
- *    折叠回 FOLD_LINES 行；再次聚焦/点击时展开回草稿实际高度（滚动位置保留）。
+ * 1. 输入框失焦折叠：composer 输入框（textarea）失去焦点时，按端收窄——
+ *    桌面折叠回 3 行、窄屏/手机折叠回 1 行（手机屏幕小，1 行留给内容）；
+ *    再次聚焦/点击时展开回草稿实际高度（滚动位置保留）。
  *    机制：输入框高度 = mirror 撑高 + [data-input-scroll] 滚动窗
  *    （CSS max-height 14 行上限，见 InputBar.module.css .scroll）。折叠 =
- *    插件 CSS 把滚动窗 max-height 压到 FOLD_LINES 行，不动
+ *    插件 CSS 把滚动窗 max-height 压到目标行数，不动
  *    mirror/backdrop/textarea 三层结构；document
  *    级 focusin/focusout 事件委托判定进出卡片（[data-composer-card]），
  *    pointerdown 兜底：点卡片任意处即展开（非交互区域顺带聚焦 textarea），
@@ -69,8 +70,8 @@
  * 13. 折叠稳定性修复：折叠判定对比实测 N 行高（line-height × N + padding）
  *     而非滚动窗当前高度——旧逻辑把"无溢出"误判为"只有 1 行"，导致
  *     多行草稿（≤14 行内）永不折叠；折叠高度用 JS 实测写入 CSS 变量
- *     --meow-smooth-fold-height（兜底值 = FOLD_LINES × 单行），任何主题都
- *     精确等于默认 FOLD_LINES 行高（失焦折叠保留 3 行）；
+ *     --meow-smooth-fold-height（按 foldLines() 的目标行数实测），任何主题
+ *     都精确等于目标行数高（桌面 3 行 / 窄屏 1 行，跨断点 resize 重算）；
  *     触屏点卡片外 click 兜底折叠（iOS/Android 点空白可能不移焦）。
  *
  * 14. 手机端禁用橡皮筋回弹：overscroll-behavior:none（html/body 与
@@ -168,13 +169,16 @@ const BAR_ATTR = 'data-meow-smooth-bar'
 /** 菜单打开标记（挂在 titleRow 上）：CSS 据此放开 overflow 防裁剪，
  *  JS 据此补偿 scrollLeft 保持原位不回跳。 */
 const HEADER_MENU_ATTR = 'data-meow-smooth-menu-open'
-/** 失焦折叠保留的行数（默认 3 行）。 */
-const FOLD_LINES = 3
-/** 折叠高度兜底：单行 24px line-height + 6px padding（InputBar.module.css
- *  契约）× FOLD_LINES。实际折叠高度由 JS 实测后写入
- *  --meow-smooth-fold-height 变量（任何主题/字号都精确等于"未输入时的
- *  默认 FOLD_LINES 行高度"）。 */
+/** 失焦折叠保留的行数：桌面 3 行（扫一眼上下文够接着写），窄屏 1 行
+ *  （手机屏幕小，1 行留给内容）。按 foldLines() 的窄屏判定取值。 */
+const FOLD_LINES_DESKTOP = 3
+const FOLD_LINES_MOBILE = 1
+/** 折叠高度兜底（仅 JS 未实测时生效）：桌面 = 单行 24px line-height +
+ *  6px padding（InputBar.module.css 契约）× 3 行；窄屏 = 1 行 30px。
+ *  实际折叠高度由 JS 按 foldLines() 实测写入 --meow-smooth-fold-height
+ *  变量（任何主题/字号都精确等于目标行数高）。 */
 const FOLDED_MAX_HEIGHT = '78px'
+const FOLDED_MAX_HEIGHT_MOBILE = '30px'
 /** 审批/提问提醒卡片元素标记（body 直接子级：fixed 顶部、z-index 9998、
  *  仅窄屏显示；IME 悬浮条 9999 优先。二者几乎不会同时出现——审批/提问
  *  pending 时 composer 被 takeover，无法打字）。 */
@@ -198,11 +202,16 @@ const HEADER_HIDDEN_ATTR = 'data-meow-smooth-header-hidden'
 const FOLD_CSS = `
 /* 过渡放基础态：折叠/展开双向都有动画。 */
 [data-composer-card] [data-input-scroll] { transition: max-height 150ms ease; }
-/* 折叠态：滚动窗压到 FOLD_LINES 行，mirror/backdrop/textarea 结构不动。
-   高度取 JS 实测的 N 行高（--meow-smooth-fold-height），未测量时回退
-   FOLDED_MAX_HEIGHT 契约值。 */
+/* 折叠态：滚动窗压到目标行数（桌面 3 行 / 窄屏 1 行），mirror/backdrop/
+   textarea 结构不动。高度取 JS 实测的 N 行高（--meow-smooth-fold-height），
+   未测量时回退契约值：桌面 78px（3 行），窄屏（<1024）30px（1 行）。 */
 [data-composer-card][${FOLD_ATTR}="${FOLD_COLLAPSED}"] [data-input-scroll] {
   max-height: var(--meow-smooth-fold-height, ${FOLDED_MAX_HEIGHT}) !important;
+}
+@media (max-width: 1023px) {
+  [data-composer-card][${FOLD_ATTR}="${FOLD_COLLAPSED}"] [data-input-scroll] {
+    max-height: var(--meow-smooth-fold-height, ${FOLDED_MAX_HEIGHT_MOBILE}) !important;
+  }
 }
 /* 输入法激活：隐藏原生 header（悬浮条独占顶部，避免重复与遮挡）。
    imeActive 在桌面恒为 false，属性永不设置，此规则不生效。 */
@@ -696,10 +705,21 @@ function expandCard(card: HTMLElement, instant = false): void {
   }
 }
 
+/** 当前折叠目标行数：窄屏（frame 宽 < 1024，dsh 布局契约断点，即手机/
+ *  小窗）1 行，桌面 3 行。与功能⑤窄屏判定同源（frame 宽，非 window）；
+ *  frame 未挂时退 window.innerWidth 兜底（首页等极早期场景）。 */
+function foldLines(): number {
+  const frame = frameElement()
+  const width = frame !== null
+    ? frame.getBoundingClientRect().width
+    : (typeof window !== 'undefined' ? window.innerWidth : SIDEBAR_AUTO_COLLAPSE)
+  return width < SIDEBAR_AUTO_COLLAPSE ? FOLD_LINES_MOBILE : FOLD_LINES_DESKTOP
+}
+
 /** 实测滚动窗 N 行内容高度（line-height × N + 上下 padding）。line-height
  *  为 'normal'（非 px）时按 font-size × 1.2 估算；全部失败回退 30px × N
  *  契约值。折叠高度与"N 行判定"共用此值，保证折叠后 = 真实默认高度。 */
-function foldedHeight(scroll: HTMLElement, lines = FOLD_LINES): number {
+function foldedHeight(scroll: HTMLElement, lines: number): number {
   const style = getComputedStyle(scroll)
   const pt = parseFloat(style.paddingTop)
   const pb = parseFloat(style.paddingBottom)
@@ -713,15 +733,15 @@ function foldedHeight(scroll: HTMLElement, lines = FOLD_LINES): number {
   return total > 0 ? total : 30 * lines
 }
 
-/** 折叠卡片到 FOLD_LINES 行（幂等）：保存 scrollTop、写入实测 N 行高变量、
- *  打折叠属性。草稿不足 FOLD_LINES 行时跳过（折叠无视觉变化）。所有折叠
- *  入口（失焦 / 触屏点卡片外）共用，行为一致。 */
+/** 折叠卡片到目标行数（桌面 3 行 / 窄屏 1 行，幂等）：保存 scrollTop、
+ *  写入实测 N 行高变量、打折叠属性。草稿不足目标行数时跳过（折叠无视觉
+ *  变化）。所有折叠入口（失焦 / 触屏点卡片外）共用，行为一致。 */
 function collapseCard(card: HTMLElement): void {
   if (card.getAttribute(FOLD_ATTR) === FOLD_COLLAPSED) return
   noteFold('cld')
   const scroll = card.querySelector<HTMLElement>('[data-input-scroll]')
   if (scroll === null) return
-  const h = foldedHeight(scroll)
+  const h = foldedHeight(scroll, foldLines())
   // 判定"不足 N 行"必须对比实测 N 行高而非 scroll.clientHeight（那是
   // 被 mirror 撑高的当前多行高度——对比它会把所有无溢出草稿都当成
   // "N 行"跳过折叠，正是折叠不稳定的根因）。
@@ -2233,6 +2253,24 @@ export function apply(ctx: any): void {
   // 触屏兜底折叠：点卡片外任意处 → 折叠（iOS/Android 点空白可能不移焦，
   // focusout 不触发；click 判定不会误伤滚动）。
   document.addEventListener('click', onDocumentClickCapture, { capture: true })
+  // 跨断点重算折叠高度（桌面 3 行 ⇄ 窄屏 1 行）：已折叠的卡片在窗口跨过
+  // 1024 断点时重写实测变量（旋转/缩窗）；未折叠的下次折叠自然按新档算。
+  // 只在跨越断点那一次动作，普通 resize 零开销。
+  let foldWasWide = foldLines() === FOLD_LINES_DESKTOP
+  const onFoldBreakpoint = (): void => {
+    const wide = foldLines() === FOLD_LINES_DESKTOP
+    if (wide === foldWasWide) return
+    foldWasWide = wide
+    for (const card of document.querySelectorAll<HTMLElement>(
+      `[data-composer-card][${FOLD_ATTR}="${FOLD_COLLAPSED}"]`,
+    )) {
+      const scroll = card.querySelector<HTMLElement>('[data-input-scroll]')
+      if (scroll !== null) {
+        card.style.setProperty('--meow-smooth-fold-height', `${foldedHeight(scroll, foldLines())}px`)
+      }
+    }
+  }
+  window.addEventListener('resize', onFoldBreakpoint)
   // 输入框焦点链路诊断（2026-08-26 "输入框卡住"bug 排障）：input/
   // beforeinput/selectionchange 环形记录，随 disposers 拆除。
   disposers.push(installFoldDiagListeners())
@@ -2247,6 +2285,7 @@ export function apply(ctx: any): void {
     document.removeEventListener('pointerdown', onPointerDownCapture, { capture: true })
     document.removeEventListener('keydown', onKeyDownCapture, { capture: true })
     document.removeEventListener('click', onDocumentClickCapture, { capture: true })
+    document.removeEventListener('resize', onFoldBreakpoint)
     document.removeEventListener('click', onModeLabelDismiss, { capture: true })
     document.removeEventListener('click', onModeLabelToggle)
   })
