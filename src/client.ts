@@ -808,6 +808,10 @@ let axisYNode: HTMLElement | null = null
 let axisVel = 0
 let axisLastT = 0
 let flingRaf = 0
+/** 手势起点（femGen round49 同款：判轴用**累计位移**——真机手指慢划时
+ *  单帧 dy 仅 2-3px，按帧判永远达不到阈值=慢划冻死、"时灵时不灵"。 */
+let axisStartX = 0
+let axisStartY = 0
 
 /** 沿链滚 y 向：找第一个"该方向还有余量"的容器滚之；全到边界=不滚
  *  （防回弹，与橡皮筋语义一致）。delta>0=scrollTop 增大（手指上划，看
@@ -865,6 +869,8 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   const t0 = event.touches[0]
   lastTouchX = t0.clientX
   lastTouchY = t0.clientY
+  axisStartX = t0.clientX
+  axisStartY = t0.clientY
   const target = event.target
   if (!(target instanceof Element)) return
   if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
@@ -917,6 +923,21 @@ function onTouchStartOverscroll(event: TouchEvent): void {
     ? ` latch=${latchEl.tagName}.${String(latchEl.className).slice(0, 24)} ox=${getComputedStyle(latchEl).overflowX} sw/c=${latchEl.scrollWidth}/${latchEl.clientWidth}`
     : (tgt?.tagName === 'TD' || tgt?.tagName === 'CODE') && latchEl === null ? ' latch=NONE' : ''
   noteFold(`os-ts chain=${overscrollChain.length} xOnly=${axisHasXOnly} exempt=${overscrollExempt} tgt=${tgt?.tagName ?? '?'}${dumpLatch}`, true)
+  // TD/CODE 祖先链完整 dump（真机表格结构侦察——latch=NONE 说明结构未知）
+  if (tgt?.tagName === 'TD' || tgt?.tagName === 'TH' || tgt?.tagName === 'CODE') {
+    const parts: string[] = []
+    let n: Element | null = tgt
+    let depth = 0
+    while (n !== null && n !== document.documentElement && depth < 6) {
+      const cs = getComputedStyle(n)
+      parts.push(`${n.tagName}.${String(n.className).slice(0, 14)} ${cs.overflowX}/${cs.overflowY} ${n.scrollWidth}/${n.clientWidth}`)
+      n = n.parentElement
+      depth += 1
+    }
+    for (let i = 0; i < parts.length; i += 2) {
+      noteFold(`os-anc${i / 2 + 1} ${parts.slice(i, i + 2).join(' | ')}`, true)
+    }
+  }
   // 轴仲裁初始化：y 链目标取链上第一个纵向可滚容器。
   axisPhase = 'undecided'
   axisLastT = 0
@@ -965,10 +986,15 @@ function onTouchMoveOverscroll(event: TouchEvent): void {
   //     主导 → 放行（表格自己原生横滚）；未定 → 累计位移再判。 ---
   if (axisHasXOnly && axisPhase !== 'x') {
     if (axisPhase === 'undecided') {
-      if (Math.abs(dy) > 10) axisPhase = 'y'
-      else if (Math.abs(dx) > 24) axisPhase = 'x'
+      // 累计位移判轴（起点算，femGen 歪招同款）：竖向优先——累计 |dy|≥10
+      // 即判 'y' 接管；横向需 ≥24 才判 'x'（真机手指起手横向抖动大，按
+      // |dy|>|dx| 判轴会先锁 x 再也出不来）。
+      const accDx = Math.abs(touch.clientX - axisStartX)
+      const accDy = Math.abs(touch.clientY - axisStartY)
+      if (accDy >= 10) axisPhase = 'y'
+      else if (accDx >= 24) axisPhase = 'x'
       if (axisPhase !== 'undecided') {
-        noteFold(`os-axis=${axisPhase} dy=${Math.round(dy)} dx=${Math.round(dx)}`, true)
+        noteFold(`os-axis=${axisPhase} accDy=${Math.round(accDy)} accDx=${Math.round(accDx)}`, true)
       }
     }
     if (axisPhase === 'y') {

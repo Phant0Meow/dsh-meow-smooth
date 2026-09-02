@@ -296,6 +296,22 @@ try {
   const rf = await evalJson(result)
   check(rf.pageDy > 50, 'F 会话顶部表格竖划（看下方）→ 页面滚动（方向语义）', `页面Δ=${rf.pageDy}`)
 
+  // ===== G. 表格慢划（每帧 3px、步间 60ms）→ 页面滚动 =====
+  // 真凶复盘：按帧判轴时慢划单帧 dy 仅 2-3px 永远达不到阈值=慢划冻死
+  //（真机"时灵时不灵"）；判轴已改累计位移（起点算），本断言钉死之。
+  const g = await evalJson(park)
+  const gcx = g.rect.x + g.rect.w / 2
+  const gy0 = Math.min(Math.max(g.rect.y + g.rect.h / 2, 40), 800)
+  await call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: gcx, y: gy0 }] })
+  for (let i = 1; i <= 12; i++) {
+    await call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: gcx, y: gy0 - i * 3 }] })
+    await sleep(60)
+  }
+  await call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await sleep(600)
+  const rg = await evalJson(result)
+  check(rg.pageDy > 15, 'G 表格慢划（每帧 3px）→ 页面滚动（累计判轴）', `页面Δ=${rg.pageDy}`)
+
   console.log(failed === 0 ? 'ALL PASS' : `${failed} FAIL`)
   if (failed > 0) process.exitCode = 1
 } catch (error) {
