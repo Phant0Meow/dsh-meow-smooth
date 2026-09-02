@@ -120,6 +120,36 @@ dsh plugin --profile web remove meow-smooth
 
 注意：多实例时每个实例用不同代理端口（如实例 A → 8444、实例 B → 8445）；默认关闭（不配置 `proxy.enabled` 就不启动），不会干扰现有部署。
 
+## 平板/手机经 Tailscale 访问 DSH（必读：信任栅栏配置）
+
+DSH Web 的 `/api` 有浏览器信任栅栏：Host 必须是回环地址，或命中启动时用 `--trusted-host` 声明的权威。经 Tailscale Serve 访问时 Host 是 MagicDNS 权威，**必须先把它加进信任名单，否则页面能打开但所有 /api 请求 403**（会话列表空白、插件数据加载失败）。
+
+**一步配置**（以 MagicDNS 权威 `pc.xxx.ts.net` 为例，换成你自己的）：
+
+```sh
+# 启动 DSH 时追加 --trusted-host
+dsh --profile web --host 127.0.0.1 --port 3080 --trusted-host pc.xxx.ts.net
+```
+
+**两条入口（二选一）**：
+
+```sh
+# A：不开压缩代理（默认），手机访问 https://pc.xxx.ts.net
+tailscale serve --bg --https=443 http://127.0.0.1:3080
+
+# B：经内置压缩代理（需在 patch 配置里开启 proxy.enabled），手机访问 https://pc.xxx.ts.net:8443
+tailscale serve --bg --https=8443 http://127.0.0.1:8444
+```
+
+> 提示：
+> - A 入口默认无端口后缀；B 入口 URL 需带 `:8443`。
+> - Tailscale Serve 的 HTTPS 同时提供 `wss://` 升级与 PWA/Web Push 所需的安全上下文。
+> - 若改用 Caddy / nginx 等反向代理，同样需要让 DSH 信任代理暴露的权威（`--trusted-host`）。
+> - 局域网直连同理：把网关/反代对外权威加入 `--trusted-host`。
+> - 安装时请保持插件原名 `meow-smooth`（改名安装会导致前端注册 id 不匹配，页面报「Failed to load plugins」）。
+
+已验证环境：DSH 0.1.1-rc.2 · meow-smooth 0.6.1 · Tailscale 1.102.3（Windows PC + Android 15 平板）。
+
 ## 实现方式（简要）
 
 - **零 dsh 本体改动**：所有功能都是插件自身的前端 CSS/JS 与 host 端审计监听，不改 dsh 任何源码；
