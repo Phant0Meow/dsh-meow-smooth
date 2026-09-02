@@ -791,12 +791,69 @@ let overscrollExempt = false
  *  全部到边界才 preventDefault——页面边缘防回弹（本功能初衷）不变。 */
 let overscrollChain: HTMLElement[] = []
 
+// ---- 轴仲裁（2026-09-01 猫猫报：表格/工具行展开内容上滑动页面不动）----
+// 根因（probe-touch-slide3 实锤）：竖滑落在 overflow-x:auto 且 sw>cw 的容器
+// （超宽表格/横滚代码块/统计行）上时，Chrome 把手势 latch 到该容器——竖向
+// 位移整个丢弃且**不 scroll-chaining 给外层**（页面纹丝不动；我们没拦 pd=0，
+// touch-action: pan-y 也救不了）。femGen 仓库卡片同款老大难的解法=move 确认
+// 意图后 JS 接管（round49）：竖向主导 → preventDefault + 手动滚 y 链（无原生
+// 惯性，touchend 用速度衰减 fling 补）；横向主导 → 放行容器自己原生横滚。
+let axisPhase: 'idle' | 'undecided' | 'x' | 'y' = 'idle'
+/** 链上存在 x-only 可滚容器（sx 有余量且 sy 无）→ 本手势需要轴仲裁。 */
+let axisHasXOnly = false
+/** y 向滚动链的首个容器（竖向接管时的滚动目标；每次 move 从整链重找
+ *  "该方向还能滚"的容器，滚到边界自然链给下一个）。 */
+let axisYNode: HTMLElement | null = null
+/** 竖向接管期间的滚动速度（px/ms，正=手指下移）——fling 初速。 */
+let axisVel = 0
+let axisLastT = 0
+let flingRaf = 0
+
+/** 沿链滚 y 向：找第一个"该方向还有余量"的容器滚之；全到边界=不滚
+ *  （防回弹，与橡皮筋语义一致）。delta>0=内容上移（看下方）。 */
+function scrollYChain(delta: number): void {
+  for (const node of overscrollChain) {
+    const canY = (delta < 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1)
+      || (delta > 0 && node.scrollTop > 0)
+    if (canY) {
+      node.scrollTop += delta
+      return
+    }
+  }
+}
+
+/** 竖向接管后的惯性滑动：速度指数衰减，新触摸/低速/全边界即停。 */
+function axisFlingStep(): void {
+  flingRaf = requestAnimationFrame(() => {
+    axisVel *= 0.94
+    if (Math.abs(axisVel) < 0.04) {
+      flingRaf = 0
+      return
+    }
+    scrollYChain(-axisVel * 16.7)
+    axisFlingStep()
+  })
+}
+
+function onTouchEndAxis(): void {
+  if (axisPhase === 'y' && Math.abs(axisVel) > 0.15 && flingRaf === 0) axisFlingStep()
+  axisPhase = 'idle'
+}
+
 /** touchstart：记录触点 + 收集可滚动祖先链（overflow auto/scroll 且确实有
  *  溢出；body/html 本体经 document.scrollingElement 单独兜底——dsh 的滚动
  *  在容器内一般用不到它，普通整页滚动页面靠它保持行为正确）。编辑控件
  *  （textarea/input）与 composer 卡片内起手 → 整序列豁免（见
  *  overscrollExempt 注释与卡片分支说明）。 */
 function onTouchStartOverscroll(event: TouchEvent): void {
+  // 轴仲裁状态重置（早退分支同样重置，防旧手势状态泄漏）；新触摸打断惯性。
+  axisPhase = 'idle'
+  axisHasXOnly = false
+  axisYNode = null
+  if (flingRaf !== 0) {
+    cancelAnimationFrame(flingRaf)
+    flingRaf = 0
+  }
   if (gestureApi?.busy() === true) return // 手势拖拽中：橡皮筋逻辑完全旁路
   overscrollChain = []
   overscrollExempt = false
@@ -836,6 +893,20 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   if (scroller instanceof HTMLElement && scroller.scrollHeight > scroller.clientHeight + 1) {
     overscrollChain.push(scroller)
   }
+  // 轴仲裁初始化：链上有"x-only 容器"（横向有溢出余量、纵向没有）→ 竖滑
+  // 会被 Chrome latch 冻结，本手势交给轴仲裁接管。
+  axisPhase = 'undecided'
+  axisLastT = 0
+  axisVel = 0
+  for (const node of overscrollChain) {
+    const style = getComputedStyle(node)
+    const oy = style.overflowY
+    const ox = style.overflowX
+    const sy = (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1
+    const sx = (ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 1
+    if (axisYNode === null && sy) axisYNode = node
+    if (sx && !sy) axisHasXOnly = true
+  }
 }
 
 /** touchmove（passive:false）：祖先链上任一可滚动容器在滑动方向还能滚 →
@@ -864,6 +935,25 @@ function onTouchMoveOverscroll(event: TouchEvent): void {
   lastTouchY = touch.clientY
   lastTouchX = touch.clientX
   if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return
+  // --- 轴仲裁（x-only 容器 latch 绕开）：见 onTouchStartOverscroll 注释。
+  //     竖向主导 → preventDefault（拦 Chrome 对表格的 latch）+ 手动滚 y 链；
+  //     横向主导 → 放行（表格自己原生横滚，有惯性）；未定 → 累计位移再判。 ---
+  if (axisHasXOnly && axisPhase !== 'x') {
+    if (axisPhase === 'undecided' && (Math.abs(dy) > 10 || Math.abs(dx) > 10)) {
+      axisPhase = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x'
+      axisLastT = performance.now()
+      axisVel = 0
+    }
+    if (axisPhase === 'y') {
+      const now = performance.now()
+      const dt = Math.max(1, now - axisLastT)
+      axisVel = dy / dt
+      axisLastT = now
+      scrollYChain(-dy)
+      if (event.cancelable) event.preventDefault()
+      return // 本事件已被轴仲裁消费，橡皮筋判定跳过
+    }
+  }
   for (const node of overscrollChain) {
     const canY = dy !== 0
       && ((dy < 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1)
@@ -2116,9 +2206,14 @@ export function apply(ctx: any): void {
   // 现代浏览器，这里是旧 iOS/安卓的兜底。
   document.addEventListener('touchstart', onTouchStartOverscroll, { passive: true })
   document.addEventListener('touchmove', onTouchMoveOverscroll, { passive: false })
+  document.addEventListener('touchend', onTouchEndAxis, { passive: true })
+  document.addEventListener('touchcancel', onTouchEndAxis, { passive: true })
   disposers.push(() => {
     document.removeEventListener('touchstart', onTouchStartOverscroll)
     document.removeEventListener('touchmove', onTouchMoveOverscroll)
+    document.removeEventListener('touchend', onTouchEndAxis, { passive: true } as EventListenerOptions)
+    document.removeEventListener('touchcancel', onTouchEndAxis, { passive: true } as EventListenerOptions)
+    if (flingRaf !== 0) cancelAnimationFrame(flingRaf)
   })
 
 
