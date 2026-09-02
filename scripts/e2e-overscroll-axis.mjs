@@ -381,6 +381,23 @@ try {
   })()`)
   check(ri.pageDy > 20, 'I 侧栏会话行（treeitem）竖划 → 列表滚动', `列表Δ=${ri.pageDy}`)
 
+  // ===== J. 长按（≥600ms 无移动）后移动 → 仲裁退出，页面不滚 =====
+  // 长按是拖拽/上下文菜单语义（如 femGen 仓库卡片 armed 拖拽、长按菜单），
+  // 轴仲裁必须让路。验证：按住 700ms 后再移动，scrollBody 不应被手动滚。
+  const j = await evalJson(park)
+  const jcx = j.rect.x + j.rect.w / 2
+  const jy0 = Math.min(Math.max(j.rect.y + j.rect.h / 2, 40), 800)
+  await call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: jcx, y: jy0 }] })
+  await sleep(700) // 长按：无移动保持 ≥600ms
+  for (let i = 1; i <= 6; i++) {
+    await call('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: jcx, y: jy0 - i * 10 }] })
+    await sleep(16)
+  }
+  await call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await sleep(400)
+  const rj = await evalJson(result)
+  check(Math.abs(rj.pageDy) < 5, 'J 长按后移动 → 仲裁退出、页面不滚（拖拽语义让路）', `页面Δ=${rj.pageDy}`)
+
   console.log(failed === 0 ? 'ALL PASS' : `${failed} FAIL`)
   if (failed > 0) process.exitCode = 1
 } catch (error) {

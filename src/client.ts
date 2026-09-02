@@ -799,8 +799,6 @@ let overscrollChain: HTMLElement[] = []
 // 意图后 JS 接管（round49）：竖向主导 → preventDefault + 手动滚 y 链（无原生
 // 惯性，touchend 用速度衰减 fling 补）；横向主导 → 放行容器自己原生横滚。
 let axisPhase: 'idle' | 'undecided' | 'x' | 'y' = 'idle'
-/** 链上存在 x-only 可滚容器（sx 有余量且 sy 无）→ 本手势需要轴仲裁。 */
-let axisHasXOnly = false
 /** y 向滚动链的首个容器（竖向接管时的滚动目标；每次 move 从整链重找
  *  "该方向还能滚"的容器，滚到边界自然链给下一个）。 */
 let axisYNode: HTMLElement | null = null
@@ -812,6 +810,8 @@ let flingRaf = 0
  *  单帧 dy 仅 2-3px，按帧判永远达不到阈值=慢划冻死、"时灵时不灵"。 */
 let axisStartX = 0
 let axisStartY = 0
+/** touchstart 时刻（长按识别：≥600ms 无移动=拖拽/长按语义，退出仲裁） */
+let axisStartT = 0
 /** 落点祖先链上有 touch-action:none（femwa 画布等自定义手势区）→ 本手势
  *  归自定义手势管，轴仲裁绝不接管（竖划=拖拽语义）。 */
 let axisExcluded = false
@@ -859,7 +859,6 @@ function onTouchEndAxis(): void {
 function onTouchStartOverscroll(event: TouchEvent): void {
   // 轴仲裁状态重置（早退分支同样重置，防旧手势状态泄漏）；新触摸打断惯性。
   axisPhase = 'idle'
-  axisHasXOnly = false
   axisExcluded = false
   axisYNode = null
   if (flingRaf !== 0) {
@@ -875,6 +874,7 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   lastTouchY = t0.clientY
   axisStartX = t0.clientX
   axisStartY = t0.clientY
+  axisStartT = performance.now()
   const target = event.target
   if (!(target instanceof Element)) return
   if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
@@ -892,7 +892,6 @@ function onTouchStartOverscroll(event: TouchEvent): void {
     return
   }
   let node: Element | null = target
-  let latchEl: HTMLElement | null = null
   while (node !== null && node !== document.documentElement) {
     if (node instanceof HTMLElement) {
       const style = getComputedStyle(node)
@@ -904,60 +903,18 @@ function onTouchStartOverscroll(event: TouchEvent): void {
       // 自定义手势区（touch-action:none，如 femwa 画布拖节点）→ 竖划是
       // 拖拽语义，轴仲裁绝不能接管。
       if (style.touchAction === 'none') axisExcluded = true
-      // 轴仲裁 latch 嫌疑（含 hidden 截断行——hidden 程序可滚，Chrome 合成器
-      // 视为潜在滚动目标锚定手势吞掉竖滑）：不进橡皮筋链，单独标记。
-      const sxLatch = (ox === 'auto' || ox === 'scroll' || ox === 'hidden') && node.scrollWidth > node.clientWidth + 1
-      if (sxLatch && !sy) {
-        if (latchEl === null) latchEl = node
-        axisHasXOnly = true
-      }
     }
     node = node.parentElement
-  }
-  // 表格单元格/代码块落点无条件仲裁接管（2026-09-02 真机 13×TD 全
-  // xOnly=false——真机表格容器的形态与桌面预期不符，具体结构待 dump 数据；
-  // 但 TD/TH/CODE 内竖划本来就该滚页面、横划放行原生，强制接管零风险）。
-  const tgtTag = target instanceof Element ? target.tagName : ''
-  if (tgtTag === 'TD' || tgtTag === 'TH' || tgtTag === 'CODE') axisHasXOnly = true
-  // 可交互元素落点全局接管（2026-09-02 猫猫：全局到处都有——边栏会话行、
-  // 设置页页签、一切"可 click"位置竖划都被真机合成器吞掉）。判定=标准可
-  // 交互选择器（femGen round49"落点无关"思想的收敛版：先收敛到交互元素，
-  // 纯内容区保持原生链路）。竖向接管滚的是触点祖先链上第一个可滚容器
-  // （scrollYChain），侧栏列表/设置页容器都在链上自然生效。弹层（dialog/
-  // pending/FAB）内排除——弹层滚动有自己的容器与语义；touch-action:none
-  // 区域排除（画布拖拽）。
-  if (!axisExcluded
-    && target.closest('button, a, [role="button"], [role="treeitem"], [role="tab"], [role="menuitem"], [role="option"], [role="checkbox"], [role="switch"], label, summary, [aria-expanded]') !== null
-    && target.closest('[role="dialog"], [data-meow-smooth-pending], [data-meow-smooth-fab]') === null) {
-    axisHasXOnly = true
   }
   const scroller = document.scrollingElement
   if (scroller instanceof HTMLElement && scroller.scrollHeight > scroller.clientHeight + 1) {
     overscrollChain.push(scroller)
   }
-  // TD/CODE 落点（真机表格/代码块场景）追加首个 latch 容器的实测形态——
-  // 真机表格结构与桌面预期可能不符（2026-09-02 真机 13×TD 全 xOnly=false）。
-  const tgt = target instanceof Element ? target : null
-  const dumpLatch = latchEl !== null && (tgt?.tagName === 'TD' || tgt?.tagName === 'CODE' || tgt?.tagName === 'TH')
-    ? ` latch=${latchEl.tagName}.${String(latchEl.className).slice(0, 24)} ox=${getComputedStyle(latchEl).overflowX} sw/c=${latchEl.scrollWidth}/${latchEl.clientWidth}`
-    : (tgt?.tagName === 'TD' || tgt?.tagName === 'CODE') && latchEl === null ? ' latch=NONE' : ''
-  noteFold(`os-ts chain=${overscrollChain.length} xOnly=${axisHasXOnly} exempt=${overscrollExempt} tgt=${tgt?.tagName ?? '?'}${dumpLatch}`, true)
-  // TD/CODE 祖先链完整 dump（真机表格结构侦察——latch=NONE 说明结构未知）
-  if (tgt?.tagName === 'TD' || tgt?.tagName === 'TH' || tgt?.tagName === 'CODE') {
-    const parts: string[] = []
-    let n: Element | null = tgt
-    let depth = 0
-    while (n !== null && n !== document.documentElement && depth < 6) {
-      const cs = getComputedStyle(n)
-      parts.push(`${n.tagName}.${String(n.className).slice(0, 14)} ${cs.overflowX}/${cs.overflowY} ${n.scrollWidth}/${n.clientWidth}`)
-      n = n.parentElement
-      depth += 1
-    }
-    for (let i = 0; i < parts.length; i += 2) {
-      noteFold(`os-anc${i / 2 + 1} ${parts.slice(i, i + 2).join(' | ')}`, true)
-    }
-  }
-  // 轴仲裁初始化：y 链目标取链上第一个纵向可滚容器。
+  // 轴仲裁：**全站落点无关接管**（2026-09-02 猫猫拍板——dsh 一切皆插件，
+  // 别人机器上有无数未知插件，元件枚举不现实；真机合成器对"可 click 元素/
+  // 截断行/任意结构"的 latch 不可预测，唯一确定方案=所有竖划都由 JS 滚）。
+  // 排除仅剩：touch-action:none 区（画布拖拽）、编辑控件/composer（豁免）、
+  // 选区拖动（move 守卫）、长按无移动（move 判定，拖拽语义退出）。
   axisPhase = 'undecided'
   axisLastT = 0
   axisVel = 0
@@ -969,6 +926,7 @@ function onTouchStartOverscroll(event: TouchEvent): void {
       break
     }
   }
+  noteFold(`os-ts chain=${overscrollChain.length} excl=${axisExcluded} tgt=${target instanceof Element ? target.tagName : '?'}`, true)
 }
 
 /** touchmove（passive:false）：祖先链上任一可滚动容器在滑动方向还能滚 →
@@ -997,19 +955,21 @@ function onTouchMoveOverscroll(event: TouchEvent): void {
   lastTouchY = touch.clientY
   lastTouchX = touch.clientX
   if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return
-  // --- 轴仲裁（x-only/hidden 容器 latch 绕开）：竖向优先判轴（femGen 歪招
-  //     "直接判定 dy"——真机手指起手必有横向抖动，若按 |dy|>|dx| 判轴会先锁
-  //     x 再也出不来；dy 超 slop 即判竖向接管）。竖向 → preventDefault（拦
-  //     Chrome 的 latch）+ 手动滚 y 链（scrollYChain 对 cancelable=false 的
-  //     合成器接管事件同样有效——直接写 scrollTop 不依赖默认行为）；横向
-  //     主导 → 放行（表格自己原生横滚）；未定 → 累计位移再判。 ---
-  if (axisHasXOnly && axisPhase !== 'x') {
+  // --- 轴仲裁（全站落点无关接管）：竖向优先累计判轴（femGen 歪招"直接
+  //     判定 dy"——真机手指起手必有横向抖动，|dy|>|dx| 判轴会先锁 x 再也
+  //     出不来；累计 |dy|≥10 即竖向接管）。竖向 → preventDefault（拦 Chrome
+  //     的 latch）+ 手动滚 y 链（scrollYChain 直接写 scrollTop，对
+  //     cancelable=false 的合成器接管事件同样有效）；横向主导 → 放行（横滚
+  //     容器自己原生滚）。长按 ≥600ms 无移动 → 拖拽/长按语义，本手势永久
+  //     退出仲裁。 ---
+  if (!axisExcluded && axisPhase !== 'x') {
     if (axisPhase === 'undecided') {
-      // 累计位移判轴（起点算，femGen 歪招同款）：竖向优先——累计 |dy|≥10
-      // 即判 'y' 接管；横向需 ≥24 才判 'x'（真机手指起手横向抖动大，按
-      // |dy|>|dx| 判轴会先锁 x 再也出不来）。
       const accDx = Math.abs(touch.clientX - axisStartX)
       const accDy = Math.abs(touch.clientY - axisStartY)
+      if (performance.now() - axisStartT > 600 && accDx < 10 && accDy < 10) {
+        axisExcluded = true // 长按无移动：拖拽/长按交互，退出仲裁并让路
+        return
+      }
       if (accDy >= 10) axisPhase = 'y'
       else if (accDx >= 24) axisPhase = 'x'
       if (axisPhase !== 'undecided') {
