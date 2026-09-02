@@ -4,7 +4,7 @@
  * 前端行为增强（纯插件，不改 dsh 本体）：
  *
  * 1. 输入框失焦折叠：composer 输入框（textarea）失去焦点时，按端收窄——
- *    桌面折叠回 3 行、窄屏/手机折叠回 1 行（手机屏幕小，1 行留给内容）；
+ *    桌面折叠回 2 行、窄屏/手机折叠回 1 行（手机屏幕小，1 行留给内容）；
  *    再次聚焦/点击时展开回草稿实际高度（滚动位置保留）。
  *    机制：输入框高度 = mirror 撑高 + [data-input-scroll] 滚动窗
  *    （CSS max-height 14 行上限，见 InputBar.module.css .scroll）。折叠 =
@@ -71,7 +71,7 @@
  *     而非滚动窗当前高度——旧逻辑把"无溢出"误判为"只有 1 行"，导致
  *     多行草稿（≤14 行内）永不折叠；折叠高度用 JS 实测写入 CSS 变量
  *     --meow-smooth-fold-height（按 foldLines() 的目标行数实测），任何主题
- *     都精确等于目标行数高（桌面 3 行 / 窄屏 1 行，跨断点 resize 重算）；
+ *     都精确等于目标行数高（桌面 2 行 / 窄屏 1 行，跨断点 resize 重算）；
  *     触屏点卡片外 click 兜底折叠（iOS/Android 点空白可能不移焦）。
  *
  * 14. 手机端禁用橡皮筋回弹：overscroll-behavior:none（html/body 与
@@ -169,15 +169,15 @@ const BAR_ATTR = 'data-meow-smooth-bar'
 /** 菜单打开标记（挂在 titleRow 上）：CSS 据此放开 overflow 防裁剪，
  *  JS 据此补偿 scrollLeft 保持原位不回跳。 */
 const HEADER_MENU_ATTR = 'data-meow-smooth-menu-open'
-/** 失焦折叠保留的行数：桌面 3 行（扫一眼上下文够接着写），窄屏 1 行
- *  （手机屏幕小，1 行留给内容）。按 foldLines() 的窄屏判定取值。 */
-const FOLD_LINES_DESKTOP = 3
+/** 失焦折叠保留的行数：桌面 2 行（扫一眼上下文够接着写，又不占屏），
+ *  窄屏 1 行（手机屏幕小，1 行留给内容）。按 foldLines() 的窄屏判定取值。 */
+const FOLD_LINES_DESKTOP = 2
 const FOLD_LINES_MOBILE = 1
 /** 折叠高度兜底（仅 JS 未实测时生效）：桌面 = 单行 24px line-height +
- *  6px padding（InputBar.module.css 契约）× 3 行；窄屏 = 1 行 30px。
+ *  6px padding（InputBar.module.css 契约）× 2 行；窄屏 = 1 行 30px。
  *  实际折叠高度由 JS 按 foldLines() 实测写入 --meow-smooth-fold-height
  *  变量（任何主题/字号都精确等于目标行数高）。 */
-const FOLDED_MAX_HEIGHT = '78px'
+const FOLDED_MAX_HEIGHT = '54px'
 const FOLDED_MAX_HEIGHT_MOBILE = '30px'
 /** 审批/提问提醒卡片元素标记（body 直接子级：fixed 顶部、z-index 9998、
  *  仅窄屏显示；IME 悬浮条 9999 优先。二者几乎不会同时出现——审批/提问
@@ -202,9 +202,9 @@ const HEADER_HIDDEN_ATTR = 'data-meow-smooth-header-hidden'
 const FOLD_CSS = `
 /* 过渡放基础态：折叠/展开双向都有动画。 */
 [data-composer-card] [data-input-scroll] { transition: max-height 150ms ease; }
-/* 折叠态：滚动窗压到目标行数（桌面 3 行 / 窄屏 1 行），mirror/backdrop/
+/* 折叠态：滚动窗压到目标行数（桌面 2 行 / 窄屏 1 行），mirror/backdrop/
    textarea 结构不动。高度取 JS 实测的 N 行高（--meow-smooth-fold-height），
-   未测量时回退契约值：桌面 78px（3 行），窄屏（<1024）30px（1 行）。 */
+   未测量时回退契约值：桌面 54px（2 行），窄屏（<1024）30px（1 行）。 */
 [data-composer-card][${FOLD_ATTR}="${FOLD_COLLAPSED}"] [data-input-scroll] {
   max-height: var(--meow-smooth-fold-height, ${FOLDED_MAX_HEIGHT}) !important;
 }
@@ -563,7 +563,8 @@ html[${IME_ROOT_ATTR}] [${FAB_ATTR}] {
   }
 }
 
-/* 运行时发送按钮，外观复刻官方 primary；恒显示，点了等价于输入框按一次回车，官方按 busyEnter 设置执行插话发送或排队。 */
+/* 运行时发送按钮，外观复刻官方 primary；仅 AI 运行中渲染（空闲不显示），
+   点击等价于输入框按一次回车，按 busyEnter 设置执行插话发送或排队。 */
 [data-meow-run-send] {
   display: grid;
   place-items: center;
@@ -586,14 +587,8 @@ html[${IME_ROOT_ATTR}] [${FAB_ATTR}] {
   user-select: none;
   touch-action: manipulation;
 }
-[data-meow-run-send]:hover:not(:disabled):not([data-meow-idle]) {
+[data-meow-run-send]:hover:not(:disabled) {
   background: var(--dsw-alias-button-info-hover);
-}
-/* 非运行灰度态，仍可点击，仅提示当前不可插话；disabled 空草稿继续用透明降级。 */
-[data-meow-run-send][data-meow-idle] {
-  opacity: 0.4;
-  background: var(--dsw-alias-button-info-fill);
-  cursor: pointer;
 }
 [data-meow-run-send]:disabled {
   opacity: 0.4;
@@ -706,7 +701,7 @@ function expandCard(card: HTMLElement, instant = false): void {
 }
 
 /** 当前折叠目标行数：窄屏（frame 宽 < 1024，dsh 布局契约断点，即手机/
- *  小窗）1 行，桌面 3 行。与功能⑤窄屏判定同源（frame 宽，非 window）；
+ *  小窗）1 行，桌面 2 行。与功能⑤窄屏判定同源（frame 宽，非 window）；
  *  frame 未挂时退 window.innerWidth 兜底（首页等极早期场景）。 */
 function foldLines(): number {
   const frame = frameElement()
@@ -733,7 +728,7 @@ function foldedHeight(scroll: HTMLElement, lines: number): number {
   return total > 0 ? total : 30 * lines
 }
 
-/** 折叠卡片到目标行数（桌面 3 行 / 窄屏 1 行，幂等）：保存 scrollTop、
+/** 折叠卡片到目标行数（桌面 2 行 / 窄屏 1 行，幂等）：保存 scrollTop、
  *  写入实测 N 行高变量、打折叠属性。草稿不足目标行数时跳过（折叠无视觉
  *  变化）。所有折叠入口（失焦 / 触屏点卡片外）共用，行为一致。 */
 function collapseCard(card: HTMLElement): void {
@@ -840,10 +835,6 @@ function syncHeaderMenu(): void {
 /** 橡皮筋抑制：最近触点坐标（touchstart 初始化，防首个 touchmove 伪位移）。 */
 let lastTouchX = 0
 let lastTouchY = 0
-/** 本次触摸序列是否豁免（编辑控件/composer 卡片内起手）：touchmove 直接
- *  放行。必须显式标记而非依赖"链为空"——早退路径链为空数组，touchmove
- *  空链循环零消费照样落到 preventDefault，正是光标手柄冻死的通道。 */
-let overscrollExempt = false
 /** 橡皮筋抑制：本次手势的可滚动祖先链（touchstart 收集，近→远排序；
  *  touchmove 只做边界判定，避免每帧 getComputedStyle 走树）。
  *
@@ -920,9 +911,13 @@ function onTouchEndAxis(): void {
 
 /** touchstart：记录触点 + 收集可滚动祖先链（overflow auto/scroll 且确实有
  *  溢出；body/html 本体经 document.scrollingElement 单独兜底——dsh 的滚动
- *  在容器内一般用不到它，普通整页滚动页面靠它保持行为正确）。编辑控件
- *  （textarea/input）与 composer 卡片内起手 → 整序列豁免（见
- *  overscrollExempt 注释与卡片分支说明）。 */
+ *  在容器内一般用不到它，普通整页滚动页面靠它保持行为正确）。
+ *  ⚠️2026-09-02：编辑控件/composer 卡片的"整序列豁免"已退役——豁免=放行
+ *  给原生，而真机合成器会 latch textarea/输入区（absolute 铺满无溢出 +
+ *  潜在可滚身份）吞掉竖划，输入框滚动反而冻死（probe-composer-swipe 实锤
+ *  双向 0 位移 pd=0）。输入框落点统一进轴仲裁：竖划接管滚
+ *  [data-input-scroll]，选区/光标场景由 Range 守卫（手柄拖动选区在场）、
+ *  长按退出（选词 ≥600ms 无移动）、纯点击（累计 <10px 不触发）三重保护。 */
 function onTouchStartOverscroll(event: TouchEvent): void {
   // 轴仲裁状态重置（早退分支同样重置，防旧手势状态泄漏）；新触摸打断惯性。
   axisPhase = 'idle'
@@ -934,7 +929,6 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   }
   if (gestureApi?.busy() === true) return // 手势拖拽中：橡皮筋逻辑完全旁路
   overscrollChain = []
-  overscrollExempt = false
   if (event.touches.length !== 1) return
   const t0 = event.touches[0]
   lastTouchX = t0.clientX
@@ -944,20 +938,6 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   axisStartT = performance.now()
   const target = event.target
   if (!(target instanceof Element)) return
-  if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
-    overscrollExempt = true
-    return
-  }
-  // composer 卡片内起手（含 textarea 边界外的落点）→ 整序列豁免（2026-08-25
-  // 光标 bug）：iOS 光标/选区手柄的水滴锚点伸出文字边缘 ~20px，折叠后一行
-  // 高的输入框上按手柄时 hit-test 常落在 textarea 外的卡片 padding 上——
-  // target 不是 textarea 却是编辑器光标/选择手势，若走链判定会被"空链零消
-  // 费"preventDefault 冻死（"经常动不了、有时又可以"=落点在框内/框外之差）。
-  // 输入区不是防回弹战场，整卡豁免。
-  if (target.closest('[data-composer-card]') !== null) {
-    overscrollExempt = true
-    return
-  }
   let node: Element | null = target
   while (node !== null && node !== document.documentElement) {
     if (node instanceof HTMLElement) {
@@ -996,10 +976,9 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   noteFold(`os-ts chain=${overscrollChain.length} excl=${axisExcluded} tgt=${target instanceof Element ? target.tagName : '?'}`, true)
 }
 
-/** touchmove（passive:false）：祖先链上任一可滚动容器在滑动方向还能滚 →
- *  放行（原生滚动接管，含"内层 x 向容器 + 外层页面 y 向"的链式组合）；
- *  整条链都已到边界 → preventDefault，阻断文档级橡皮筋。双指不干预。
- *  链上节点的滚动位置随手势推进变化，每次 move 重算即可自然处理。 */
+/** touchmove（passive:false）：全站轴仲裁主场。竖向 → 接管手动滚；横向 →
+ *  放行原生横滚；整条 y 链到边界 → preventDefault（防回弹）。选区拖动/
+ *  长按/双指等特殊语义在早退守卫里让路。 */
 function onTouchMoveOverscroll(event: TouchEvent): void {
   // 手势拖拽中必须旁路：本 handler 读取 scrollTop/scrollHeight 等布局
   // 属性，而手势每帧写 grid 轨道标脏布局——读写交错会强制同步重排，
@@ -1013,15 +992,12 @@ function onTouchMoveOverscroll(event: TouchEvent): void {
   // 轮不到 JS 兜底（现代 iOS 由上方 CSS overscroll-behavior:none 负责）。
   const sel = document.getSelection()
   if (sel !== null && sel.type === 'Range') return
-  // touchstart 已豁免的序列（编辑控件/composer 卡片内起手）→ 整段放行。
-  if (overscrollExempt) return
   if (event.touches.length !== 1) return
   const touch = event.touches[0]
   const dy = touch.clientY - lastTouchY
   const dx = touch.clientX - lastTouchX
   lastTouchY = touch.clientY
   lastTouchX = touch.clientX
-  if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return
   // --- 轴仲裁（全站落点无关接管）：竖向优先累计判轴（femGen 歪招"直接
   //     判定 dy"——真机手指起手必有横向抖动，|dy|>|dx| 判轴会先锁 x 再也
   //     出不来；累计 |dy|≥10 即竖向接管）。竖向 → preventDefault（拦 Chrome
@@ -2253,7 +2229,7 @@ export function apply(ctx: any): void {
   // 触屏兜底折叠：点卡片外任意处 → 折叠（iOS/Android 点空白可能不移焦，
   // focusout 不触发；click 判定不会误伤滚动）。
   document.addEventListener('click', onDocumentClickCapture, { capture: true })
-  // 跨断点重算折叠高度（桌面 3 行 ⇄ 窄屏 1 行）：已折叠的卡片在窗口跨过
+  // 跨断点重算折叠高度（桌面 2 行 ⇄ 窄屏 1 行）：已折叠的卡片在窗口跨过
   // 1024 断点时重写实测变量（旋转/缩窗）；未折叠的下次折叠自然按新档算。
   // 只在跨越断点那一次动作，普通 resize 零开销。
   let foldWasWide = foldLines() === FOLD_LINES_DESKTOP

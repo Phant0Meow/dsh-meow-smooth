@@ -2,7 +2,10 @@
  *
  *  AI 运行时官方主按钮变停止，电脑按回车能插话/排队，手机回车被需求 4 改成换行、又无修饰键，插话途径就没了。
  *
- *  恒显示、外观与图标完全复刻官方 primary。提交经 apply 注入的 submitMode 走官方 SessionInput.submit(mode)，并按会话 ui-conversation 命名空间的 busyEnter 设置决定 mode：queue（排队）或 steer（直接推进当前 turn），从而与官方回车行为对齐。
+ *  仅 AI 运行中显示（官方主按钮变停止时），空闲不渲染——猫猫拍板：两个箭头并列丑（2026-09-02）。
+ *  外观与图标完全复刻官方 primary。提交经 apply 注入的 submitMode 走官方 SessionInput.submit(mode)，
+ *  并按会话 ui-conversation 命名空间的 busyEnter 设置决定 mode：queue（排队）或 steer（直接推进当前 turn），
+ *  从而与官方回车行为对齐。
  */
 import type { ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
@@ -39,25 +42,27 @@ export function RunSendButton({
     const s = snapshot as { subagent?: unknown } | null | undefined
     return s?.subagent === null || s?.subagent === undefined
   })
-  // 非运行＝灰度态 data-meow-idle，提示当前不可插话，但点击仍可用，等价普通发送。
-  const idle = !running
-  // disabled 只由空草稿驱动，真正不可点；非运行不真正禁用，仅视觉变灰。
+  // disabled 只由空草稿驱动，真正不可点。
   const disabled = draft.trim() === ''
 
   const dispatchRunEnter = (): void => {
-    // 非运行＝普通发送（官方 resolve 亦退化为 queue）；运行＝按 busyEnter 设置，steering 不可用（子代理等）时退化为 queue，与官方 ComposerSubmissionPolicy.resolve 对齐。
+    // 运行＝按 busyEnter 设置，steering 不可用（子代理等）时退化为 queue，与官方 ComposerSubmissionPolicy.resolve 对齐；
+    // 非运行瞬间（回合刚结束）＝普通发送（官方 resolve 亦退化为 queue）。
     const mode: RunSendMode = running && steeringAvailable ? (busyEnter ?? 'queue') : 'queue'
     submitMode(mode)
   }
+
+  // 空闲不渲染（hooks 已全部调用完，条件 return 在末尾）：只有官方主按钮变
+  // 停止的运行期，第二个箭头才出现——平时与官方按钮并列两个箭头太丑。
+  if (!running) return null
 
   return (
     <button
       type="button"
       data-meow-run-send
-      data-meow-idle={idle || undefined}
       data-disabled={disabled || undefined}
-      title={running ? '插话或排队发送' : '发送（回车）'}
-      aria-label={running ? '插话或排队发送' : '发送（回车）'}
+      title="插话或排队发送"
+      aria-label="插话或排队发送"
       disabled={disabled}
       onClick={dispatchRunEnter}
     >
