@@ -127,3 +127,8 @@ dsh plugin --profile web remove meow-smooth
 - 审批/提问提醒：host 端监听审计流投影未决状态，插件内只读路由暴露，client 轮询 + 隐形槽位跨会话感知；
 - 通知：页面内 Notification + Web Push（PWA 资源由插件提供）+ webhook（Bark 等）三级通道，按可用性自动降级；
 - 压缩代理：插件内置反向代理按 `Accept-Encoding` 给 `/api/*` JSON 加 gzip，SSE/WS/静态资源透传。
+
+## 致谢
+
+- [better-er](https://github.com/better-er)——运行中插话/排队发送按钮（PR #6）和 tsc 类型检查的工程化打底。手机上回车改成换行之后，运行中的插话一直没入口，这个按钮把最后一块拼图补上了，谢谢！
+
