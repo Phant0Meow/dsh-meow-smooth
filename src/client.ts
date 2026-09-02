@@ -912,6 +912,15 @@ function onTouchStartOverscroll(event: TouchEvent): void {
   // 但 TD/TH/CODE 内竖划本来就该滚页面、横划放行原生，强制接管零风险）。
   const tgtTag = target instanceof Element ? target.tagName : ''
   if (tgtTag === 'TD' || tgtTag === 'TH' || tgtTag === 'CODE') axisHasXOnly = true
+  // 可展开行（工具调用/thinking 收起态）落点强制接管（2026-09-02 真机二轮
+  // 实锤：行内容**是否截断**决定仲裁是否命中——长命令的行 xOnly=true 好了、
+  // 短命令的行 xOnly=false 依旧冻。行内容截断与否是碰运气，改用行为特征：
+  // aria-expanded 是官方折叠行的标准属性）。header/侧栏/弹层内的排除——
+  // 那些区域的竖滑有自己的语义（菜单滚动等）。
+  if (target.closest('[aria-expanded]') !== null
+    && target.closest('[data-slot="conversation.session.header"], [data-slot="sidebar"], [role="dialog"], [data-meow-smooth-pending], [data-meow-smooth-fab]') === null) {
+    axisHasXOnly = true
+  }
   const scroller = document.scrollingElement
   if (scroller instanceof HTMLElement && scroller.scrollHeight > scroller.clientHeight + 1) {
     overscrollChain.push(scroller)

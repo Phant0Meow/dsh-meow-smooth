@@ -312,6 +312,40 @@ try {
   const rg = await evalJson(result)
   check(rg.pageDy > 15, 'G 表格慢划（每帧 3px）→ 页面滚动（累计判轴）', `页面Δ=${rg.pageDy}`)
 
+  // ===== H. 无截断的 aria-expanded 行（短命令 tool call）竖划 → 页面滚动 =====
+  // 真机二轮实锤：行内容不截断时 SPAN 无溢出 → 仲裁不命中 → 依旧冻。
+  // 修复=落点在 [aria-expanded] 折叠行内即强制接管（不看内容截断与否）。
+  await evalJson(`(() => {
+    document.querySelector('[data-probe-row]')?.remove()
+    const host = document.createElement('div')
+    host.setAttribute('data-probe-row', 'true')
+    const sc = [...document.querySelectorAll('*')].find(x => {
+      const cs = getComputedStyle(x)
+      return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && x.scrollHeight > x.clientHeight + 400 && x.clientHeight > 300
+    })
+    const mid = document.elementFromPoint(195, Math.round(sc.clientHeight / 2))
+    const anchor = (mid !== null && mid.parentElement !== null) ? mid.parentElement : sc.firstElementChild
+    host.innerHTML = '<div aria-expanded="false" style="overflow:hidden;white-space:nowrap;height:28px;line-height:28px;border:1px solid #886;padding:0 10px;cursor:pointer">Pwsh short cmd</div>'
+    if (anchor !== null && anchor !== sc.firstElementChild) anchor.before(host)
+    else sc.firstElementChild?.prepend(host)
+    return JSON.stringify({ ok: true })
+  })()`)
+  const h = await evalJson(`(() => {
+    const el = document.querySelector('[data-probe-row] [aria-expanded]')
+    const sc = [...document.querySelectorAll('*')].find(x => {
+      const cs = getComputedStyle(x)
+      return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && x.scrollHeight > x.clientHeight + 400 && x.clientHeight > 300
+    })
+    const docTop = el.getBoundingClientRect().top + sc.scrollTop
+    sc.scrollTop = Math.max(60, Math.min(Math.round(docTop - sc.clientHeight / 2), Math.round(sc.scrollHeight - sc.clientHeight - 60)))
+    const r = el.getBoundingClientRect()
+    window.__slBefore = Math.round(sc.scrollTop)
+    return JSON.stringify({ ok: true, rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } })
+  })()`)
+  await swipe(h.rect, -1)
+  const rh = await evalJson(result)
+  check(rh.pageDy > 50, 'H 无截断 aria-expanded 行竖划 → 页面滚动（短命令 tool call）', `页面Δ=${rh.pageDy}`)
+
   console.log(failed === 0 ? 'ALL PASS' : `${failed} FAIL`)
   if (failed > 0) process.exitCode = 1
 } catch (error) {
