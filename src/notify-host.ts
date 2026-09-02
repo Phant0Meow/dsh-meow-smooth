@@ -27,6 +27,7 @@ import { deflateSync, crc32 } from 'node:zlib'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { resolveTargetPort } from './compress-proxy.ts'
 
 /** 一条长任务完成/运行失败事件（/pending 路由 events 段的 wire 形状）。 */
 export interface CompletionEvent {
@@ -184,6 +185,10 @@ function swSource(): string {
     '/* meow-smooth service worker: push notification bridge */',
     "self.addEventListener('install', () => { self.skipWaiting() })",
     "self.addEventListener('activate', (event) => { event.waitUntil(self.clients.claim()) })",
+    // 空 fetch handler：Chromium 旧版「可安装」判定要求 SW 带 fetch listener
+    // （新引擎已豁免，但旧 Chrome Android 仍查）——空监听 = 全部请求走浏览器
+    // 默认网络行为（绝不 respondWith），对 SSE/API/静态资源零影响。
+    "self.addEventListener('fetch', () => {})",
     "self.addEventListener('push', (event) => {",
     '  let data = {}',
     "  try { data = event.data ? event.data.json() : {} } catch { /* non-JSON payload ignored */ }",
@@ -221,19 +226,61 @@ function swSource(): string {
   ].join('\n')
 }
 
-/** manifest.json 内容（PWA 安装必需；start_url/scope 根路径）。 */
+/** manifest.json 内容（PWA 安装必需；start_url/scope 根路径）。
+ *  安卓 Chrome「安装应用」判定（2026-08-31 实测 probe-pwa-install.mjs，
+ *  Page.getInstallabilityErrors 0 错误）：name/short_name + standalone +
+ *  start_url + ≥192/512 PNG 图标 + secure context 即达标，SW 已不再硬性
+ *  要求（fetch handler 仍兜底，见 swSource）。theme_color/background_color
+ *  不参与可安装判定，但决定安卓安装确认卡、系统状态栏与启动画面配色
+ *  （与 icon 渐变同色系）；id 固定安装身份（重装/更新不会生成重复应用）。 */
 function manifestSource(): string {
   return JSON.stringify({
+    id: '/',
     name: 'dsh meow',
     short_name: 'dsh',
     display: 'standalone',
     start_url: '/',
     scope: '/',
+    background_color: '#312E81',
+    theme_color: '#4F46E5',
     icons: [
       { src: '/plugins/meow-smooth/icon-180.png', sizes: '180x180', type: 'image/png' },
       { src: '/plugins/meow-smooth/icon-512.png', sizes: '512x512', type: 'image/png' },
     ],
   })
+}
+
+/**
+ * 探测本体 manifest 是否已完整可安装（PNG 图标 + 独立显示模式）。
+ *
+ * 职责边界（2026-08-31 猫猫拍板）：PWA manifest 的"名字/身份"归 dsh 本体，
+ * 插件只做手机可安装兜底——本体 manifest 完整（如 3081 喵版本体自带
+ * "dsh喵"）时 tapIndex 让位不再注入插件 manifest link；残缺（官方原版
+ * SVG-only，iOS/安卓均不可安装）时才注入兜底。
+ *
+ * @param port - dsh 本体端口（resolveTargetPort，插件与其同进程 argv）。
+ * @returns true=本体 manifest 完整（让位）；探测失败一律 false（保守=
+ *          维持兜底注入的现状行为）。
+ */
+export async function probeHostManifestComplete(port: number, attempts = 6, delayMs = 150): Promise<boolean> {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`, { signal: AbortSignal.timeout(2000) })
+      if (res.ok) {
+        const m = await res.json() as { display?: string; icons?: { src?: string; type?: string }[] }
+        const displayOk = m.display === 'standalone' || m.display === 'fullscreen' || m.display === 'minimal-ui'
+        const pngOk = Array.isArray(m.icons) && m.icons.some(icon =>
+          (typeof icon?.type === 'string' && icon.type.includes('png')) ||
+          (typeof icon?.src === 'string' && icon.src.toLowerCase().endsWith('.png')))
+        // 拿到 manifest 但残缺：结果确定，不再重试。
+        return displayOk && pngOk
+      }
+    } catch {
+      // webserver 未就绪（启动竞态）/瞬时错误：重试。
+    }
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+  return false
 }
 
 /**
@@ -724,18 +771,31 @@ const pushOnce = (key: string, fn: () => void): void => {
         webServer.register(route)
       }
     }
-    // PWA 安装链接（manifest + apple-touch-icon）注入 index.html。
+    // PWA 安装链接注入 index.html（2026-08-31 让位机制）：职责边界=名字/
+    // 身份归 dsh 本体，插件只做手机可安装兜底。本体 manifest 完整可安装
+    // （probeHostManifestComplete，异步探测不阻塞装配）→ 不注 manifest
+    // link 让位本体（如 3081 喵版本体自带 "dsh喵"）；残缺（官方原版
+    // SVG-only，iOS/安卓均不可安装）→ 照旧注入兜底。apple-touch-icon 两种
+    // 情况都注（本体没有，iOS 主屏图标必需）。
+    let hostManifestReady = false
+    void probeHostManifestComplete(resolveTargetPort())
+      .then((ok) => {
+        hostManifestReady = ok
+        if (ok) console.log('[meow-smooth] host manifest installable-complete — manifest link injection skipped (apple-touch-icon still injected)')
+      })
+      .catch(() => { /* 探测失败按残缺兜底（保守=维持注入现状） */ })
     if (typeof webServer.tapIndex === 'function' && typeof ctx.effect === 'function') {
       ctx.effect(() => webServer.tapIndex((html: string) => {
-        const links = '<link rel="manifest" href="/plugins/meow-smooth/manifest.json">'
+        const links = (hostManifestReady ? '' : '<link rel="manifest" href="/plugins/meow-smooth/manifest.json">')
           + '<link rel="apple-touch-icon" href="/plugins/meow-smooth/icon-180.png">'
-        // 幂等：已注入过本插件的 manifest 就不再重复。
         // 坑：官方 index.html 自带 <link rel="manifest" href="/manifest.webmanifest">
         // （仅 SVG icon，iOS 不支持 SVG 图标）——旧逻辑见 rel="manifest" 就跳过，
         // 导致插件 manifest（PNG icon + standalone）与 apple-touch-icon 从未注入，
         // iOS 添加主屏幕得到的是普通快捷方式（无 Web Push 资格、无通知授权）。
-        // 修复：无条件把插件链接插到 <head> 最前（规范：首个 rel="manifest" 生效）。
-        if (html.includes('/plugins/meow-smooth/manifest.json')) return html
+        // 修复：插件链接插到 <head> 最前（规范：首个 rel="manifest" 生效），
+        // 本体完整时才让位。幂等锚点=apple-touch-icon（让位后 html 里不再有
+        // 插件 manifest 链接，旧锚点会失效）。
+        if (html.includes('/plugins/meow-smooth/icon-180.png')) return html
         return html.replace('<head>', `<head>${links}`)
       }), 'meow-smooth: pwa manifest tap')
     }

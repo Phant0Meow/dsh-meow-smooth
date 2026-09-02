@@ -196,6 +196,38 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
     }
   }
 
+  // --- PWA 安装诊断（安卓「安装应用」链路，2026-08-31）：beforeinstallprompt
+  //     触发 = Chromium 已判定本页可安装（手机 Chrome 菜单随之出现「安装
+  //     应用」入口）；appinstalled = 用户确认安装完成。两者直报 /diag-log
+  //     （不走 reportDiag 防抖——一生至多一两次，不能被 boot/visible 高频
+  //     diag 吞掉），之后手机上「能不能装/装没装」直接查 GET /diag，不用猜。
+  //     不 preventDefault、不拦截 prompt：浏览器自带安装入口照常工作；
+  //     event 存模块变量备用（未来要做页面内安装按钮时可直接 prompt()）。 ---
+  let deferredInstallPrompt: Event | null = null
+  const reportPwaDiag = (msg: string): void => {
+    try {
+      void fetch('/plugins/meow-smooth/diag-log', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ msg }),
+      }).catch(() => { /* 诊断上报失败静默 */ })
+    } catch {
+      // 诊断上报失败静默
+    }
+  }
+  const onBeforeInstallPrompt = (event: Event): void => {
+    deferredInstallPrompt = event
+    reportPwaDiag('pwa-beforeinstallprompt (installable=OK, install entry available)')
+  }
+  const onAppInstalled = (): void => {
+    deferredInstallPrompt = null
+    reportPwaDiag('pwa-appinstalled')
+  }
+  if (window.isSecureContext) {
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+    window.addEventListener('appinstalled', onAppInstalled)
+  }
+
   // --- 首次用户手势请求权限（浏览器要求授权在交互上下文中更稳）；
   //     授权成功即补订阅（覆盖"加载时未授权 → 弹框授权"的时序）。 ---
   const requestPermissionOnGesture = (): void => {
@@ -296,6 +328,10 @@ export function installNotifyClient(deps: NotifyClientDeps): NotifyClientHandle 
     dispose(): void {
       document.removeEventListener('pointerdown', requestPermissionOnGesture, { capture: true })
       document.removeEventListener('keydown', requestPermissionOnGesture, { capture: true })
+      if (window.isSecureContext) {
+        window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt)
+        window.removeEventListener('appinstalled', onAppInstalled)
+      }
       if (onVisibleResubscribe !== null) {
         document.removeEventListener('visibilitychange', onVisibleResubscribe)
       }

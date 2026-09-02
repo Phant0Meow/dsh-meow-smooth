@@ -685,17 +685,48 @@ function collapseCard(card: HTMLElement): void {
   card.setAttribute(FOLD_ATTR, FOLD_COLLAPSED)
 }
 
-/** 视觉判定：键盘占屏是否 ≥20% 物理屏高（输入法激活）。
- *  用 screen.height 而非 innerHeight：Android Chrome 键盘弹起时页面
- *  同步 resize（innerHeight 与 visualViewport 一起缩小，差值≈0——
- *  "收起后再点输入框横条不出现"的根因）；screen.height 是物理屏高，
- *  不受页面 resize 影响。键盘占屏 35%+ 必然触发，浏览器地址栏/工具栏
- *  ~14% 不误判。桌面（精细指针）永不触发。 */
+/** 动态基线：无键盘态的 visualViewport 高度。screen.height 在分屏/折叠
+ *  半窗下不再是可靠锚——半窗 vv 天生 ≈ 半屏，"对物理屏的差值"恒超 20%
+ *  阈值（2026-08-31 猫猫报：折叠屏/分屏使用时永远只显示 IME 条、原生
+ *  header 消失——旧判定恒误报）。键盘的本质信号是 vv 相对自身无键盘态
+ *  的骤缩，用滑动基线替代 screen.height：
+ *  变大 → 立即跟随（键盘收起/窗口变高/展开折叠屏）；
+ *  缩小 <15% → 跟随（分屏分隔条缓拖、系统 UI 增减）；
+ *  缩小 ≥15% → 仅当无编辑焦点信号才跟随（有焦点=疑似键盘，冻结基线防
+ *  污染；折叠⇄展开、旋转等窗口形态突变都发生在无焦点时，靠此自愈）。 */
+let vvBaseline = 0
+
+/** 最近一次可编辑元素聚焦时间（键盘弹出的伴随信号）：窗口形态变化
+ *  （折叠/分屏/旋转）的 vv 骤变发生时无编辑焦点，不误判键盘；蓝牙键盘
+ *  聚焦但 vv 不缩也不误显示（屏幕无遮挡本就不需要条）。 */
+let lastEditableFocusAt = 0
+
+/** 视觉判定：键盘激活 = vv 相对动态基线骤缩 ≥25%（≥120px 绝对下限，
+ *  防小窗噪声）且近期有可编辑元素聚焦。旧版
+ *  "screen.height−vv.height > 20% 物理屏"在分屏/折叠半窗恒真，已废弃；
+ *  键盘实际占屏 35%+，从任何合理基线都能检出。 */
 function imeActive(): boolean {
   if (!isCoarsePointer()) return false
   const vv = window.visualViewport
   if (vv === null || vv.height === 0) return false
-  return window.screen.height - vv.height > window.screen.height * 0.2
+  const vh = vv.height
+  // 焦点信号：当前正聚焦可编辑元素（打字中的常态——focusin 只发一次，
+  // 不能只看 1200ms 时间戳）或刚聚焦过（blur 后键盘收起动画期）。
+  const active = document.activeElement
+  const editableActive = active instanceof HTMLTextAreaElement
+    || active instanceof HTMLInputElement
+    || (active instanceof HTMLElement && active.isContentEditable)
+  const focusRecent = editableActive || Date.now() - lastEditableFocusAt < 1200
+  if (vvBaseline === 0) {
+    vvBaseline = vh // 首次调用建立基线（页面加载时键盘已弹出的场景：基线
+    // 短暂偏低 → 本轮判 false，键盘收起后 vv 变大自动归位，自愈）
+  } else if (vh > vvBaseline) {
+    vvBaseline = vh
+  } else if (vvBaseline - vh < vvBaseline * 0.15 || !focusRecent) {
+    vvBaseline = vh
+  } // else：缩 ≥15% 且有焦点 → 疑似键盘，冻结基线
+  if (vvBaseline - vh < Math.max(vvBaseline * 0.25, 120)) return false
+  return focusRecent
 }
 
 /** 当前会话名（header 面包屑的当前段：nav 里最后一个 disabled 按钮）。 */
@@ -2093,13 +2124,20 @@ export function apply(ctx: any): void {
 
 
   // 输入法激活 → 悬浮 Session name 条（需求 3）+ 自动聚焦键盘抑制：
-  // 判定 = 键盘占屏 ≥20% 物理屏高（screen.height 差值，Android 页面
-  // resize 也不受影响）。syncIme 统一做 false→true 转换检测（resize
+  // 判定 = imeActive()（动态基线骤缩 ≥25% + 编辑焦点伴随信号，2026-08-31
+  // 重写：旧"screen.height 差值 20%"在折叠屏/分屏半窗恒误报，半窗 vv
+  // 天生只有半屏高）。syncIme 统一做 false→true 转换检测（resize
   // 与轮询共用 lastIme）：键盘激活且最近无用户点击输入框（dsh 切换
   // 会话自动聚焦的场景）→ 收起键盘、不显示条——"只在用户激活输入框
   // 时键盘才打开"；打字中（无转换）绝不干预。
   // 键盘动画期间 visualViewport resize 连发：除 IME 同步外顺带做聚焦
   // 可视性兜底（幂等，仅在输入框被遮时才写滚动）。
+  const onEditableFocusIn = (event: FocusEvent): void => {
+    const t = event.target
+    if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement
+      || (t instanceof HTMLElement && t.isContentEditable)) lastEditableFocusAt = Date.now()
+  }
+  document.addEventListener('focusin', onEditableFocusIn, true)
   const onVisualViewportResize = (): void => { syncIme(); ensureComposerVisible() }
   window.visualViewport?.addEventListener('resize', onVisualViewportResize)
   window.visualViewport?.addEventListener('scroll', pinBar)
@@ -2110,6 +2148,7 @@ export function apply(ctx: any): void {
     furlTick = window.setInterval(() => { syncIme(); syncSidebarFurl() }, 500)
   }
   disposers.push(() => {
+    document.removeEventListener('focusin', onEditableFocusIn, true)
     window.visualViewport?.removeEventListener('resize', onVisualViewportResize)
     window.visualViewport?.removeEventListener('scroll', pinBar)
     if (furlTick !== 0) window.clearInterval(furlTick)
