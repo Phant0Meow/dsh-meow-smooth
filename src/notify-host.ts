@@ -110,6 +110,23 @@ function dataDir(): string {
   return join(home, '.meow-smooth')
 }
 
+/**
+ * 取一个会话的事件流。
+ *
+ * dsh 的 Session 只暴露 `snapshotEvents()`（`core/session/src/index.ts:633`），
+ * **没有 `events` 属性**——`session.events` 会恒为 `undefined`，于是所有"读事件流"
+ * 的功能（标题折叠、审批命令原文、孤儿审批扫描）都静默返回空且不报错。
+ * 保留 `.events` 兜底以兼容更早版本。
+ *
+ * @param session - `ctx.sessions.get(id)` 或 `sessions.list()` 给出的会话对象。
+ * @returns 事件数组；取不到时返回 undefined。
+ */
+export function sessionEventsOf(session: unknown): unknown[] | undefined {
+  const candidate = session as { snapshotEvents?: () => readonly unknown[]; events?: unknown } | null | undefined
+  if (typeof candidate?.snapshotEvents === 'function') return [...candidate.snapshotEvents()]
+  return Array.isArray(candidate?.events) ? candidate.events : undefined
+}
+
 /** 从会话事件流推导展示名：优先折叠官方 session/title 事件（last-wins，
  *  与卡片/列表一致），无则回退首个 user/message 文本截断。 */
 function sessionTitleFromEvents(events: unknown[] | undefined): string {
@@ -479,12 +496,12 @@ interface WebPushMod {
     if (cached !== undefined) return cached
     let title = ''
     try {
-      const session = ctx?.sessions?.get?.(sessionId)
-      title = sessionTitleFromEvents(session?.events)
+      title = sessionTitleFromEvents(sessionEventsOf(ctx?.sessions?.get?.(sessionId)))
     } catch {
       title = ''
     }
-    titleCache.set(sessionId, title)
+    // 只缓存非空标题：首次查询时标题可能还没生成，缓存空串会把它永久钉死。
+    if (title !== '') titleCache.set(sessionId, title)
     return title
   }
 

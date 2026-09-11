@@ -49,7 +49,7 @@ interface PendingQuestionView {
   title?: string
 }
 
-import { installNotifyHost } from './notify-host.ts'
+import { installNotifyHost, sessionEventsOf } from './notify-host.ts'
 import { startCompressProxy, resolveTargetPort, detectOfficialGzip } from './compress-proxy.ts'
 
 /** 插件名（loader 诊断用；与 cordis.patch.yml 的 name 一致）。 */
@@ -207,7 +207,7 @@ export function apply(ctx: any, config?: Config): void {
    *  foldSessionTitle 同语义；未命名返回空，由客户端兜底文案显示）。 */
   const sessionTitleOf = (session: any): string => {
     try {
-      const events: unknown[] | undefined = session?.events
+      const events = sessionEventsOf(session)
       if (!Array.isArray(events)) return ''
       for (let i = events.length - 1; i >= 0; i -= 1) {
         const event = events[i] as { type?: string; data?: { title?: unknown } } | undefined
@@ -282,7 +282,7 @@ export function apply(ctx: any, config?: Config): void {
     if (sessions !== undefined && typeof sessions.list === 'function') {
       for (const session of sessions.list()) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 宿主会话事件结构未输入
-        const events: any[] | undefined = session?.events
+        const events: any[] | undefined = sessionEventsOf(session)
         if (!Array.isArray(events)) continue
         const decided = new Set<string>()
         for (const event of events) {
@@ -339,7 +339,7 @@ export function apply(ctx: any, config?: Config): void {
     if (view.callId === undefined) return undefined
     try {
       const session = sessions?.get?.(view.sessionId)
-      const events: unknown[] | undefined = session?.events
+      const events = sessionEventsOf(session)
       if (!Array.isArray(events)) return undefined
       for (let i = events.length - 1; i >= 0; i -= 1) {
         const event = events[i] as { type?: string; data?: { callId?: unknown; arguments?: string } } | undefined
