@@ -85,6 +85,10 @@ export interface NotifyHostConfig {
   webhookIconUrl?: string
   /** Bark 通知点击跳转地址（https URL，如 dsh 的 tailscale 入口）。 */
   webhookAppUrl?: string
+  /** webhook 发送策略：'fallback'（默认，仅在 Web Push 无订阅或全部失败时才发）
+   *  或 'always'（每次通知都发——与桌面 Web Push 并行的第二通道，例如把通知
+   *  稳定投递到飞书/企业微信，同时保住电脑端的系统通知）。 */
+  webhookMode?: 'fallback' | 'always'
 }
 
 /** notify-host 对外接口（index.ts 消费）。 */
@@ -441,18 +445,20 @@ interface WebPushMod {
   }
 
   /** 发送决策：任一 DSH 页面聚焦（用户在看着）→ 不推 Web Push 也不发
-   *  webhook（卡片气泡负责提醒，避免打扰）；无聚焦页面 → Web Push 优先，
-   *  无订阅/全部失败才走 webhook（Bark 兜底）。 */
+   *  webhook（卡片气泡负责提醒，避免打扰）；无聚焦页面 → Web Push 优先。
+   *  webhook 再按 webhookMode 决定：'fallback' 仅在无订阅或全部失败时发
+   *  （Bark 兜底），'always' 每次都发（与桌面推送并行的第二通道）。 */
   const deliver = async (payload: PushPayload): Promise<void> => {
     if (anyFocusedRecently()) return
     const delivered = await sendPush(payload)
-    if (!delivered) sendWebhook(payload)
+    if (!delivered || webhookMode === 'always') sendWebhook(payload)
   }
 
   /** 通用 webhook 通道（Bark 等）：POST { title, body, group, icon?, url?,
    *  kind, sessionId }；未配置或失败静默。group 供 Bark 通知分组折叠；
    *  icon/url 由 webhookIconUrl/webhookAppUrl 配置（Bark 支持通知图标与
    *  点击跳转）。 */
+  const webhookMode = config?.webhookMode ?? 'fallback'
   const webhookUrl = config?.webhookUrl
   const webhookIconUrl = config?.webhookIconUrl
   const webhookAppUrl = config?.webhookAppUrl
