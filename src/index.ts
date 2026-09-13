@@ -51,6 +51,7 @@ interface PendingQuestionView {
 
 import { installNotifyHost } from './notify-host.ts'
 import { startCompressProxy, resolveTargetPort, detectOfficialGzip } from './compress-proxy.ts'
+import { connectionAuthOf, authGate } from './auth-gate.ts'
 
 /** 插件名（loader 诊断用；与 cordis.patch.yml 的 name 一致）。 */
 export const name = 'meow-smooth'
@@ -76,8 +77,11 @@ interface WebServerFace {
  *  webServer 必须显式声明（2026-08-20 实测）：rc.6 的 include 装配下
  *  ctx.get('webServer') 对未声明服务返回 undefined → 路由静默跳过
  *  （/pending 404；崩溃重启后 3080 复现）；声明后走属性访问，与
- *  dsh-super-injector 同款可靠路径。3081（新版 cordis）双路径均可用。 */
-export const inject = ['sessions', 'webServer']
+ *  dsh-super-injector 同款可靠路径。3081（新版 cordis）双路径均可用。
+ *  connection（2026-09-13 安全修复）：动态路由鉴权闸依赖
+ *  connection.requestRejection（官方 /api 同闸）；web profile 必有此服务
+ *  （dsh-client-connection），与 usage-query 插件的声明方式一致。 */
+export const inject = ['sessions', 'webServer', 'connection']
 
 /** 插件配置（cordis.patch.yml 可覆盖；通知模块消费 longTaskToolCalls 与
  *  vapid keys，其余字段兼容既有配置）。 */
@@ -359,10 +363,13 @@ export function apply(ctx: any, config?: Config): void {
 
   // --- 只读状态路由 ---
   if (webServer !== undefined && typeof webServer.register === 'function') {
+    // 鉴权闸（2026-09-13 安全修复）：/pending 暴露未决审批细节（含命令
+    // 文本），必须与官方 /api 同闸（connection.requestRejection）。
+    const connection = connectionAuthOf(ctx)
     const dispose = webServer.register({
       kind: 'exact',
       path: '/plugins/meow-smooth/pending',
-      handler: (req: unknown, res: { writeHead: (code: number, headers: Record<string, string>) => void; end: (body?: string) => void }) => {
+      handler: authGate(connection, (req: unknown, res: { writeHead: (code: number, headers: Record<string, string>) => void; end: (body?: string) => void }) => {
         try {
           // 页面聚焦上报（x-meow-focus 头：1=页面聚焦）：任一页面聚焦时
           // host 抑制 Web Push 系统通知（卡片气泡负责提醒）。
@@ -401,7 +408,7 @@ export function apply(ctx: any, config?: Config): void {
           res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
           res.end('{"error":"internal"}')
         }
-      },
+      }),
     })
     if (typeof ctx.effect === 'function') {
       ctx.effect(() => dispose, 'meow-smooth: pending route')

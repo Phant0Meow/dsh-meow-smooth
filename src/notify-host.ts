@@ -28,6 +28,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { resolveTargetPort } from './compress-proxy.ts'
+import { connectionAuthOf, authGate } from './auth-gate.ts'
 
 /** webServer 服务最小面（登记只读路由 + PWA 链接注入；register 返回 dispose）。 */
 interface HostWebServerFace {
@@ -308,6 +309,10 @@ export function installNotifyHost(ctx: any, config?: NotifyHostConfig): NotifyHo
   const threshold = typeof config?.longTaskToolCalls === 'number' && config.longTaskToolCalls > 0
     ? config.longTaskToolCalls
     : 7
+
+  // 动态路由鉴权闸（2026-09-13 安全修复）：webServer.register 不经过官方
+  // 鉴权层，动态路由必须包 connection.requestRejection（与 /api 同闸）。
+  const connection = connectionAuthOf(ctx)
 
   // --- 长任务完成事件队列（内存，TTL + cap） ---
   const completions: CompletionEvent[] = []
@@ -666,19 +671,19 @@ const pushOnce = (key: string, fn: () => void): void => {
       {
         kind: 'exact',
         path: '/plugins/meow-smooth/push-config',
-        handler: (_req, res) => {
+        handler: authGate(connection, (_req, res) => {
           void ensurePush().then((enabled) => {
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
             res.end(JSON.stringify(enabled && vapidPublicKey !== undefined
               ? { enabled: true, publicKey: vapidPublicKey }
               : { enabled: false }))
           })
-        },
+        }),
       },
       {
         kind: 'exact',
         path: '/plugins/meow-smooth/push-subscribe',
-        handler: (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
+        handler: authGate(connection, (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
           if ((req as { method?: string })?.method !== 'POST') {
             res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
             res.end('{"error":"method not allowed"}')
@@ -705,12 +710,12 @@ const pushOnce = (key: string, fn: () => void): void => {
               res.end('{"error":"bad json"}')
             }
           })
-        },
+        }),
       },
       {
         kind: 'exact',
         path: '/plugins/meow-smooth/debug-fail',
-        handler: (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
+        handler: authGate(connection, (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
           // 调试：手动注入一条模拟失败事件，走真实队列 + 推送决策链——
           // 不用等真实的 LLM 错误就能端到端验证通知/卡片是否活着。
           // 只入内存队列（TTL 10 分钟），不碰任何会话数据。
@@ -741,12 +746,12 @@ const pushOnce = (key: string, fn: () => void): void => {
           pushOnce(item.id, () => { void deliver(payload) })
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
           res.end(JSON.stringify({ ok: true, id: item.id }))
-        },
+        }),
       },
       {
         kind: 'exact',
         path: '/plugins/meow-smooth/diag-log',
-        handler: (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
+        handler: authGate(connection, (req: unknown, res: { writeHead: (code: number, headers?: Record<string, string>) => void; end: (body?: string) => void }) => {
           if ((req as { method?: string })?.method !== 'POST') {
             res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' })
             res.end('{"error":"method not allowed"}')
@@ -768,15 +773,15 @@ const pushOnce = (key: string, fn: () => void): void => {
               res.end('{"error":"bad json"}')
             }
           })
-        },
+        }),
       },
       {
         kind: 'exact',
         path: '/plugins/meow-smooth/diag',
-        handler: (_req, res) => {
+        handler: authGate(connection, (_req, res) => {
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
           res.end(JSON.stringify({ diag: diagLog }))
-        },
+        }),
       },
     ]
     for (const route of routes) {
