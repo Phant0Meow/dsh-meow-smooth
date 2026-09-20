@@ -155,7 +155,7 @@ tailscale serve --bg --https=8443 http://127.0.0.1:8444
 > - 局域网直连同理：把网关/反代对外权威加入 `--trusted-host`。
 > - 安装时请保持插件原名 `meow-smooth`（改名安装会导致前端注册 id 不匹配，页面报「Failed to load plugins」）。
 
-已验证环境：DSH 0.1.1-rc.2 · meow-smooth 0.6.1 · Tailscale 1.102.3（Windows PC + Android 15 平板）。
+已验证环境：DSH 0.1.5-rc.1 · meow-smooth 0.7.1 · Tailscale 1.102.3（Windows PC + Android 手机）；DSH 0.1.1-rc.2 · meow-smooth 0.6.1 · Tailscale 1.102.3（Windows PC + Android 15 平板）。
 
 ## 实现方式（简要）
 

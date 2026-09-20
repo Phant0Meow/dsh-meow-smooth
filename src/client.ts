@@ -3,7 +3,9 @@
  *
  * 前端行为增强（纯插件，不改 dsh 本体）：
  *
- * 1. 输入框失焦折叠：composer 输入框（textarea）失去焦点时，按端收窄——
+ * 1. 输入框失焦折叠：composer 输入区（旧版是 textarea，dsh 0.1.5 起是 Lexical
+ *    contenteditable——"事件/焦点是否落在输入区"的判定统一走 composerEditableOf）
+ *    失去焦点时，按端收窄——
  *    桌面折叠回 2 行、窄屏/手机折叠回 1 行（手机屏幕小，1 行留给内容）；
  *    再次聚焦/点击时展开回草稿实际高度（滚动位置保留）。
  *    机制：输入框高度 = mirror 撑高 + [data-input-scroll] 滚动窗
@@ -667,7 +669,9 @@ function noteFold(msg: string, post = false): void {
   try {
     const ae = document.activeElement
     const tag = ae instanceof HTMLTextAreaElement ? 'ta' : (ae instanceof HTMLElement ? ae.tagName : 'null')
-    const extra = ae instanceof HTMLTextAreaElement ? ` len=${ae.value.length}` : ''
+    const extra = ae instanceof HTMLTextAreaElement
+      ? ` len=${ae.value.length}`
+      : (ae instanceof HTMLElement && ae.isContentEditable ? ` len=${(ae.textContent ?? '').length}` : '')
     foldTrace.push(`${Date.now() % 100000} ${msg} ae=${tag}${extra}`)
     if (foldTrace.length > 60) foldTrace.shift()
   } catch { /* 诊断绝不干扰主流程 */ }
@@ -682,20 +686,20 @@ function noteFold(msg: string, post = false): void {
     } catch { /* 忽略 */ }
   }
 }
-/** composer 卡片内 textarea 的编辑流监听（input/beforeinput/selectionchange
+/** composer 卡片内输入区的编辑流监听（input/beforeinput/selectionchange
  *  ——高频，只入环形不上报）。apply 注册、disposers 拆除。 */
 function installFoldDiagListeners(): () => void {
   const onInput = (event: Event): void => {
-    if (!(event.target instanceof HTMLTextAreaElement) || composerCardOf(event.target) === null) return
-    noteFold(`ipt len=${event.target.value.length}`)
+    const el = composerEditableOf(event.target)
+    if (el === null) return
+    noteFold(`ipt len=${editableLength(el)}`)
   }
   const onBeforeInput = (event: Event): void => {
-    if (!(event.target instanceof HTMLTextAreaElement) || composerCardOf(event.target) === null) return
+    if (composerEditableOf(event.target) === null) return
     noteFold(`bei ${(event as InputEvent).inputType ?? '?'}`)
   }
   const onSelectionChange = (): void => {
-    const ae = document.activeElement
-    if (!(ae instanceof HTMLTextAreaElement) || composerCardOf(ae) === null) return
+    if (composerEditableOf(document.activeElement) === null) return
     const sel = document.getSelection()
     const type = sel?.type ?? '?'
     if (type === foldSelLast) return
@@ -716,6 +720,25 @@ function installFoldDiagListeners(): () => void {
 function composerCardOf(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof Element)) return null
   return target.closest('[data-composer-card]')
+}
+
+/** composer 输入区元素。dsh 0.1.5 起输入区是 Lexical 的 contenteditable
+ *  （`ComposerContentEditable.tsx` 发出 `data-composer-input`），此前是
+ *  textarea。凡是"这个事件/焦点是不是发生在输入区"的判定都必须走这里，
+ *  否则新版下会静默失败——回车拦截、enterkeyhint、编辑流诊断、聚焦抑制、
+ *  键盘遮挡修正会一起失效，且不报任何错。 */
+function composerEditableOf(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) return null
+  if (composerCardOf(target) === null) return null
+  const el = target.closest<HTMLElement>('[data-composer-input], textarea')
+  if (el === null) return null
+  if (el instanceof HTMLTextAreaElement) return el.readOnly || el.disabled ? null : el
+  return el.isContentEditable ? el : null
+}
+
+/** 可编辑元素的当前文本长度（textarea 读 value，contenteditable 读 textContent）。 */
+function editableLength(el: HTMLElement): number {
+  return el instanceof HTMLTextAreaElement ? el.value.length : (el.textContent ?? '').length
 }
 
 /** 展开卡片（幂等）：移除折叠属性 + 恢复滚动位置 + 清除动态折叠行高
@@ -1160,9 +1183,9 @@ const supTrace = (msg: string): void => {
 }
 const suppressFocusIn = (event: FocusEvent): void => {
   document.documentElement.dataset.supCalled = 'yes'
-  const target = event.target
-  if (!(target instanceof HTMLTextAreaElement) || !isCoarsePointer()) { supTrace('skip not-ta-or-fine'); return }
-  if (composerCardOf(target) === null) { supTrace('skip outside card'); return }
+  const target = composerEditableOf(event.target)
+  if (target === null) { supTrace('skip not-editable'); return }
+  if (!isCoarsePointer()) { supTrace('skip fine pointer'); return }
   if (Date.now() - lastComposerPointer < 600) { supTrace('skip recent user pointer'); return }
   suppressing = true
   target.blur()
@@ -1185,8 +1208,8 @@ function syncIme(): void {
   lastIme = now
   if (now) {
     if (Date.now() - lastComposerPointer > 1000) {
-      const active = document.activeElement
-      if (active instanceof HTMLTextAreaElement && composerCardOf(active) !== null) {
+      const active = composerEditableOf(document.activeElement)
+      if (active !== null) {
         noteFold('ime+ autofocused -> blur', true)
         active.blur() // 无用户点击的键盘激活（会话切换自动聚焦）→ 收起
         return // 键盘即将收起，不显示条
@@ -1215,8 +1238,8 @@ function syncIme(): void {
  *  卡片底边不受内部滚动影响，才是"composer 是否可见"的真边界；桌面
  *  无键盘，卡片完整可见时本函数恒为 no-op。 */
 function ensureComposerVisible(): void {
-  const active = document.activeElement
-  if (!(active instanceof HTMLTextAreaElement)) return
+  const active = composerEditableOf(document.activeElement)
+  if (active === null) return
   const card = composerCardOf(active)
   if (card === null) return
   const vv = window.visualViewport
@@ -1278,7 +1301,9 @@ function onFocusIn(event: FocusEvent): void {
   // 触屏键盘的回车键显示为"换行"（配合需求 4：触屏 Enter 插入换行）。
   // 注意：这里不再直接压缩 header——键盘是否弹起由 visualViewport
   // 判定（imeActive），聚焦本身不是键盘信号（外接键盘/不自动弹键盘）。
-  card.querySelector<HTMLTextAreaElement>('textarea')?.setAttribute('enterkeyhint', 'enter')
+  // 新版输入区是 contenteditable（`data-composer-input`）；只挂在 textarea 上
+  // 会让触屏键盘的回车键显示成"发送"而不是"换行"。
+  card.querySelector<HTMLElement>('[data-composer-input], textarea')?.setAttribute('enterkeyhint', 'enter')
 }
 
 /** 焦点离开卡片：折叠到 1 行（保存 scrollTop）。重复监听时幂等。 */
@@ -1351,15 +1376,16 @@ function onPointerDownCapture(event: PointerEvent): void {
   const card = composerCardOf(event.target)
   if (card === null) return
   const tgt = event.target instanceof Element ? event.target : null
-  noteFold(`pd ${tgt?.closest('textarea') !== null ? 'ta' : 'card'}`, true)
+  noteFold(`pd ${tgt?.closest('textarea, [data-composer-input]') !== null ? 'ta' : 'card'}`, true)
   lastComposerPointer = Date.now()
   expandCard(card, true)
   revealSoon()
   const target = event.target
   if (!(target instanceof Element)) return
-  if (target.closest('button, select, input, textarea, a, [role="menuitem"], [role="menu"]')) return
-  const ta = card.querySelector<HTMLTextAreaElement>('textarea')
-  if (ta !== null && !ta.disabled && !ta.readOnly) ta.focus()
+  // 输入区本身也算"交互控件"：点它由原生处理焦点与光标落点，这里不抢。
+  if (target.closest('button, select, input, textarea, [data-composer-input], a, [role="menuitem"], [role="menu"]')) return
+  const editable = card.querySelector<HTMLElement>('[data-composer-input], textarea')
+  if (editable !== null && composerEditableOf(editable) !== null) editable.focus()
 }
 
 /** 触屏（粗指针）判定：需求 4 只在手机/触屏设备生效，桌面键盘保持 Enter 发送。 */
@@ -1380,9 +1406,11 @@ function isCoarsePointer(): boolean {
 function onKeyDownCapture(event: KeyboardEvent): void {
   if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return
   if (event.isComposing || event.keyCode === 229) return
-  const target = event.target
-  if (!(target instanceof HTMLTextAreaElement) || target.readOnly || target.disabled) return
-  if (composerCardOf(target) === null) return
+  // 输入区判定见 composerEditableOf：新版是 Lexical contenteditable。
+  // 这里只 stopPropagation、不 preventDefault——浏览器原生换行会被 Lexical 的
+  // beforeinput 路径接住（insertParagraph → INSERT_PARAGRAPH_COMMAND →
+  // selection.insertLineBreak()），且不会触发挂在 KEY_ENTER_COMMAND 上的提交。
+  if (composerEditableOf(event.target) === null) return
   if (!isCoarsePointer()) return
   noteFold('keyEnter', true)
   // 只断官方发送路径，把换行还给浏览器（2026-08-25 v5.3 重写，修"换行
@@ -2176,9 +2204,9 @@ export function FoldDock({ session, sessionId: sessionIdProp, onSessionSwitch, r
   useEffect(() => {
     if (!isCoarsePointer()) return
     const timer = window.setTimeout(() => {
-      const ta = document.querySelector('[data-composer-card] textarea')
-      if (ta instanceof HTMLTextAreaElement && document.activeElement === ta) {
-        ta.blur()
+      const el = document.querySelector('[data-composer-card] [data-composer-input], [data-composer-card] textarea')
+      if (el instanceof HTMLElement && document.activeElement === el) {
+        el.blur()
       }
     }, 50)
     return () => window.clearTimeout(timer)
