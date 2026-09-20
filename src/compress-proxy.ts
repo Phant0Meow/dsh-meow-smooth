@@ -174,17 +174,20 @@ export function startCompressProxy(options: CompressProxyOptions): {
 /**
  * 官方 gzip 探测的候选路径，按"跨版本存活度"排序：
  *
- *  1. `/plugins/meow-smooth/pending` —— 本插件 apply 内自注册的只读路由，
- *     所有版本一律存在，且实测能区分压缩能力：
+ *  1. `/plugins/meow-smooth/sw.js` —— 本插件自注册的 Service Worker 路由
+ *     （~2KB application/javascript，恒 > 压缩阈值，所有版本一律存在）。
+ *     2026-09-13 安全修复后 /pending 走鉴权闸（无 cookie 的本机探测会
+ *     401），探测路径必须保持免鉴权——sw.js 是纯静态资源（零数据），
+ *     恰好满足；官方 gzip 中间件对 webserver 全部响应生效，插件路由也在内。
  *       · dsh ≤0.1.1（3080/3081 实测）→ 200 且无 content-encoding
- *       · dsh 0.1.5-rc.1（2026-09-10 实测）→ 200 + content-encoding: gzip
+ *       · dsh 0.1.5-rc.1 → 200 + content-encoding: gzip（官方压缩覆盖全部路由）
  *  2. `/plugins/meow-smooth/client.js` —— 旧版 dsh 由本体提供的静态资源路由。
  *     注意：0.1.5 起客户端模块改为组合 URL `/plugins/??<id>/client.js,…&rev=…`，
  *     本路径已 404（2026-09-10 实测），故只能作备用候选，不可再作唯一依据——
  *     旧实现只用它，在新版上必然探测失败、误判为旧版而放弃 passthrough 降级。
  */
 export const GZIP_PROBE_PATHS: readonly string[] = [
-  '/plugins/meow-smooth/pending',
+  '/plugins/meow-smooth/sw.js',
   '/plugins/meow-smooth/client.js',
 ]
 
