@@ -1,0 +1,10 @@
+{
+  "port": 2587,
+  "host": "127.0.0.1",
+  "webhookUrl": "https://open.feishu.cn/open-apis/bot/v2/hook/REPLACE-WITH-YOUR-HOOK-TOKEN",
+  "secret": "",
+  "appUrl": "https://your-dsh-entry.example.com",
+  "startupNotice": true,
+  "launchUrlFile": "dsh-stdout.log",
+  "logFile": "relay.log"
+}

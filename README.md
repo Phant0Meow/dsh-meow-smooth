@@ -99,6 +99,52 @@ dsh plugin --profile web remove meow-smooth
 - **iOS 已知限制**：iOS 18.x 上 PWA 通知权限弹窗偶尔不出现（WebKit 320551）、APNs 偶尔投递不到（WebKit 319865）——均为概率性问题，授权成功后通常能正常收到，Bark 可作稳定兜底；
 - **多实例**：每个 dsh 实例各自在 patch 里配置，跳转/图标 URL 用各自入口。
 
+### 飞书 / 企业微信群机器人（可选，需要转发脚本）
+
+飞书自定义机器人和企业微信群机器人要的不是 Bark 形状的报文，而是各自的卡片结构。插件只发 Bark 形状的 JSON，所以用它们需要一层转换：
+
+`scripts/feishu-relay.mjs` 是一个零依赖的转发进程——接收插件发出的 Bark 形状报文，构造成飞书 interactive 卡片（按事件类型配色：待审批橙、待回答蓝、完成绿、失败红、启动青），签名后投递到群机器人的 webhook。
+
+> **先把脚本放到你自己的目录。** 下面的命令假定你就在一个含 `scripts/` 的目录里。若你是从 npm 或 `dsh plugin add github:…` 安装的，文件在 `<profile>/node_modules/meow-smooth/scripts/` 下——请先把 `feishu-relay.mjs` 与 `feishu-relay.config.example.json` 复制到一个你自有的稳定目录再运行。脚本把配置与日志都写在**它自己所在的目录**，直接在 `node_modules` 里跑的话，重装一次就全丢了。
+
+1. 复制配置样例，填入群机器人的 webhook 地址（`secret` 只在飞书侧开了「签名校验」时才需要）：
+
+   ```sh
+   cp scripts/feishu-relay.config.example.json scripts/feishu-relay.config.json
+   ```
+
+2. patch 配置里让 webhook 每次都发，并把地址指向这个进程：
+
+   ```yaml
+   - id: meow-smooth
+     config:
+       enabled: true
+       webhookMode: always        # 默认 fallback：桌面 Web Push 成功时 webhook 永不触发
+       webhookUrl: 'http://127.0.0.1:2587/'
+   ```
+
+   `webhookMode: always` 是必须的：默认的 `fallback` 只在 Web Push 无订阅或全部失败时才发 webhook，而同一台机器的桌面端订阅通常是好的，于是 webhook 永远收不到东西。
+
+3. 启动转发进程（与 dsh 同机，常驻）：
+
+   ```sh
+   node scripts/feishu-relay.mjs
+   ```
+
+**想让卡片按钮点了就能直接进 dsh，还需要额外把 dsh 的输出落盘。** dsh 的浏览器 cookie 是 `SameSite=Strict`、按浏览器各存各的、绑定 hostname+port，从手机上的 IM 点一个裸域名链接必然 401；能换到 cookie 的是带 launch token 的链接，而那个 token 只出现在 dsh 启动时的 stdout（在进程内存里，不落盘、没有文件可读）。所以把启动输出重定向到一个文件，并让配置里的 `launchUrlFile` 指向它（默认是同目录的 `dsh-stdout.log`）：
+
+```sh
+dsh web --no-open > dsh-stdout.log 2>&1          # Linux / macOS（或 dsh web --no-open | tee dsh-stdout.log）
+```
+
+```powershell
+dsh web --no-open *> dsh-stdout.log              # Windows PowerShell
+```
+
+**启动顺序：先清空日志 → 再起转发进程 → 最后起 dsh。** 上面那种重定向会在 dsh 启动时把日志清空，正合要求；但若转发进程先起、而日志里还留着上一轮进程的 token，它会立刻发出一个点不进去的链接。转发进程按 BOM 自动分辨 UTF-8 与 UTF-16LE，两种编码的日志都能读。
+
+不配置 `launchUrlFile` 也能用，只是卡片按钮是裸域名——已经有 cookie 的浏览器仍能点开。
+
 ## 手机访问加速（可选）
 
 开启步骤：
