@@ -130,7 +130,7 @@
  *     第三方插件能加按钮的唯一扩展点是 sidebar.footer.action（list 槽，
  *     渲染在底部区），超出 1 个即三态。不数工作区区域：展开态那里是整棵
  *     会话树，settle 前后数量不一致会抖动误判。判定每次同步都跑，插件
- *     热装/热卸自动跟随（实测 3081 的 dsh-femwa 🎭 按钮即走三态）。
+ *     热装/热卸自动跟随（实测 3081 的 dsh-femo 🎭 按钮即走三态）。
  *     实现：frame 的 data-sidebar-collapsed 是本体契约属性；furl 标记挂
  *     documentElement（不随 React 重渲染丢失）；grid-template-columns 用
  *     !important 压过 inline style 归零第一轨（窄屏 details 轨道恒为 0，
@@ -138,9 +138,32 @@
  *     visibility:hidden 但保持挂载（display:none 会把后续 auto-placement
  *     列前移进第一轨）；小方块的鱼 logo 从竖条顶部原生按钮的 brand mark
  *     克隆，主题色跟随。
+ *
+ * 19. 宽手机右侧面板半屏分栏（2026-09-19 猫猫需求，纯 CSS）：0.1.6 的
+ *     右侧面板（顶栏右键钮打开的文件查看面板，官方名 sidebar-right，
+ *     猫猫叫它 canvas）在视口 <768px 时官方强制全屏覆盖（ui-sidebar-right
+ *     RightbarSeat：autoFullscreen = viewportWidth < 768，panel 打
+ *     position:fixed; inset:0 + 内联 style width:100%）——折叠屏内屏/
+ *     小平板（560–767px）完全够放两栏，全屏反而看不了对话。本功能在该
+ *     宽度带把全屏覆盖改为"屏幕中分"：面板钉右半屏（left:50% +
+ *     width:auto !important 压过内联 100%），会话列 padding 让出左半
+ *     （calc(100% ± 56px - 50vw)：56 = 窄屏收起态 rail 宽；furl 态第一轨
+ *     已归 0 则免加）；padding 过渡与本体的面板滑入同速同曲线，观感是
+ *     对话让位、面板滑入同步完成。 ≥768 官方本来就解出右栏轨道
+ *     （默认 45% 视口），不归本功能管。锚点全部走稳定属性/类尾缀：
+ *     面板 = [data-sidebar-right-panel="fullscreen"][data-sidebar-right-open]
+ *     （React 随开合即时增删，比 frame 的 data-rightbar-fullscreen 快——
+ *     那个要等滑入动画播完才由 syncPresentation 落上），会话列 =
+ *     [class*="_centerCol"]（AppFrame.module.css local 名，哈希前缀随
+ *     版本变、尾缀不变，同功能⑰锚法），开合判定用 body:has()（iOS
+ *     Safari 15.4+/Chrome 105+）。开面板瞬间官方会自动收起窄屏侧边栏
+ *     （openRightbar：viewportWidth < 1024 → narrowExpanded = false），
+ *     故 56px rail 恒定成立；侧边栏尚展开的过渡瞬间规则不生效（面板
+ *     保持原生全屏），侧边栏收起后自动切分栏，无需 JS 参与。
  */
 
 import { useEffect, useRef } from 'react'
+import { installBackGuard } from './back-guard.ts'
 import { installNotifyClient, type NotifyItem } from './notify-client.ts'
 import { installSettingsMobile } from './settings-mobile.ts'
 import { installSidebarGesture } from './sidebar-gesture.ts'
@@ -580,6 +603,42 @@ html[${IME_ROOT_ATTR}] [${FAB_ATTR}] {
   }
 }
 
+/* ---- 功能⑲ 宽手机（560–767px）右侧面板半屏分栏 ---- */
+/* 生效带 = "宽于普通手机、又够不到官方 768 右栏断点"的折叠屏内屏/小平板：
+   下限 560px（普通手机最宽 ~480，折叠屏内屏 ~600 起），上限 767.98px
+   （≥768 官方原生解出右栏轨道，本来就是分栏）。 */
+@media (min-width: 560px) and (max-width: 767.98px) {
+  /* 会话列让位动画：与本体面板滑入/轨道过渡同速同曲线（ui-layout AppFrame
+     的 transition 契约），观感是对话与面板同步各就各位。 */
+  [data-slot="root"] [class*="_centerCol"] {
+    transition: padding-right var(--ds-transition-duration-slow, 300ms) var(--ds-ease-in-out, ease-in-out);
+  }
+  /* 面板开着（React 属性随开合即时增删）：会话列右内边距让出左半屏。
+     calc 推导（目标 = 内容右缘钉在屏幕正中 50vw）：
+       padding = 列宽(100%) + 列起点 - 50vw；
+     列起点 = 窄屏收起态 rail 56px——开面板瞬间官方自动收起窄屏侧边栏
+     （openRightbar 的 narrowExpanded=false），56 恒定成立。 */
+  body:has([data-sidebar-right-panel="fullscreen"][data-sidebar-right-open]) [data-slot="root"] [class*="_centerCol"] {
+    padding-right: calc(100% + 56px - 50vw);
+  }
+  /* furl 态（功能⑱）第一轨已归 0，列起点 56px 免加。选择器含 html 标记，
+     特异性高于上一条，furl 时自然覆盖。 */
+  html[data-meow-smooth-furled]:has([data-sidebar-right-panel="fullscreen"][data-sidebar-right-open]) [data-slot="root"] [class*="_centerCol"] {
+    padding-right: calc(100% - 50vw);
+  }
+  /* 面板本体：全屏覆盖改为钉右半屏。官方全屏态 = position:fixed; inset:0
+     + 内联 style width:100%（SidebarPanel JSX 契约）——width 必须
+     !important 压过内联，left 压过 inset:0 的 0；top/right/bottom 官方值
+     本就是 0，不重复声明。z-index 40 与官方一致不动。
+     只绑 fullscreen 不绑 open：面板常驻挂载（收起仅 translate(100%)
+     滑出屏外），若绑定 open，关面板瞬间属性消失 → 几何先跳回全屏再
+     播滑出，肉眼可见地"变宽"；不绑则半宽滑出，与滑入对称。 */
+  [data-sidebar-right-panel="fullscreen"] {
+    left: 50% !important;
+    width: auto !important;
+  }
+}
+
 /* 运行时发送按钮，外观复刻官方 primary；仅 AI 运行中渲染（空闲不显示），
    点击等价于输入框按一次回车，按 busyEnter 设置执行插话发送或排队。 */
 [data-meow-run-send] {
@@ -941,7 +1000,7 @@ let axisStartX = 0
 let axisStartY = 0
 /** touchstart 时刻（长按识别：≥600ms 无移动=拖拽/长按语义，退出仲裁） */
 let axisStartT = 0
-/** 落点祖先链上有 touch-action:none（femwa 画布等自定义手势区）→ 本手势
+/** 落点祖先链上有 touch-action:none（femo 画布等自定义手势区）→ 本手势
  *  归自定义手势管，轴仲裁绝不接管（竖划=拖拽语义）。 */
 let axisExcluded = false
 
@@ -1018,7 +1077,7 @@ function onTouchStartOverscroll(event: TouchEvent): void {
       const sy = (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 1
       const sx = (ox === 'auto' || ox === 'scroll') && node.scrollWidth > node.clientWidth + 1
       if (sy || sx) overscrollChain.push(node)
-      // 自定义手势区（touch-action:none，如 femwa 画布拖节点）→ 竖划是
+      // 自定义手势区（touch-action:none，如 femo 画布拖节点）→ 竖划是
       // 拖拽语义，轴仲裁绝不能接管。
       if (style.touchAction === 'none') axisExcluded = true
     }
@@ -2235,13 +2294,203 @@ export function FoldDock({ session, sessionId: sessionIdProp, onSessionSwitch, r
   return null
 }
 
+/** 功能⑱降级看门狗（2026-09-11 手机端"左下角鲸鱼按钮"bug 的页面内可见化）：
+ *  小方块（FAB）挂 body 跨实例复用、从不移除；一旦样式表丢失（热替换
+ *  dispose 后 apply 在服务检查处早退 / ui=off / 注入前异常），display:none
+ *  与 position:fixed 一并失效，FAB 以裸按钮形态跌回文档流尾部——把文档
+ *  撑高、整页可被推上去。手机端开不了 DevTools，故 bug 态直接以纯文本
+ *  显示在页面最底一行（含 stage 面包屑/样式表/定位三项现场值）；正常态
+ *  该行不渲染。不依赖 slots/layout，任何 apply 结局下都运行；单实例协议
+ *  同款（window 挂停止函数，新实例先清旧定时器）。
+ *
+ *  2026-09-11 法证升级：真机抓到的现场（stage=suppressor-registered +
+ *  sheet=missing）与任何已提交版本的 apply 控制流矛盾（v0.1.0 先注入后
+ *  检查；v5.4+ 入口第一行即写 enter）——删除者另有其人。故加装删除监听：
+ *  ① MutationObserver 盯 document.head，样式表被移除即记录（含删除时刻
+ *  stage，任何手法含 head 内联清扫都逃不掉）；② 原型钩子（Element.remove
+ *  / Node.removeChild 透传包装）补抓调用栈帧。记录进 window
+ *  .__meowSheetRemovals 环形缓冲（6 条），末条随诊断行上屏。 */
+const BUG_BANNER_ID = 'meow-smooth-bug-banner'
+
+/** 本份 bundle 的看门狗构建标：横幅里的 bundleRev 就是它——谁在报告，一目
+ * 了然。与 gestureTag（documentElement 上最后一次 installSidebarGesture 留
+ *  下的标记）对照：两者不一致 = 页面上混跑过不同 rev 的构建（混合 rev 铁证）。 */
+const BUGWATCH_REV = 'fw2'
+
+const SHEET_FORENSICS_FLAG = '__meowSheetForensicsInstalled'
+const SHEET_REMOVAL_RING = '__meowSheetRemovals'
+
+/** 页面存活时长（秒）：以第一个调用者为页面纪元起点，跨热替换累计。 */
+function pageAgeSec(): string {
+  const w = window as unknown as Record<string, unknown>
+  if (w.__meowPageT0 === undefined) w.__meowPageT0 = Date.now()
+  return `${Math.round((Date.now() - (w.__meowPageT0 as number)) / 1000)}s`
+}
+
+/** apply 运行日志（window 级、跨热替换累计，环形 8 条）：入口/早退/完成各
+ *  记一条。横幅尾部附全文——最后一次 apply 到底走到哪、跑过几轮，一眼定案。 */
+function applyLogPush(msg: string): void {
+  const w = window as unknown as Record<string, unknown>
+  const log = (w.__meowApplyLog as string[] | undefined) ?? []
+  log.push(`${Date.now() % 100000} ${msg}`)
+  if (log.length > 8) log.shift()
+  w.__meowApplyLog = log
+}
+
+/** 样式表删除法证：原型钩子抓栈 + head MutationObserver 记录。幂等
+ *  （window 旗标），跨热替换只装一次——原型补丁本来就要活整页生命周期。 */
+function installSheetForensics(): void {
+  const w = window as unknown as Record<string, unknown>
+  if (w[SHEET_FORENSICS_FLAG] === true) return
+  w[SHEET_FORENSICS_FLAG] = true
+  const ring: string[] = []
+  w[SHEET_REMOVAL_RING] = ring
+  const isSheet = (node: unknown): node is Element =>
+    node instanceof Element && node.tagName === 'STYLE' && node.hasAttribute('data-meow-fold-css')
+  // 原型钩子只做一件事：匹配到样式表被删时，解析调用栈存入 lastFrame。
+  // 栈帧提取规则：跳过全部 client.js 内部帧（含被混淆改名的钩子自身）——
+  // 第一个外部帧即真凶；全是内部帧 → 删除来自插件自己的 dispose（热替换），
+  // 取最外层内部帧并打 [内部] 标。
+  let lastFrame = 'no-hook'
+  const noteCall = (node: unknown): void => {
+    if (!isSheet(node)) return
+    const frames = (new Error().stack ?? '')
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s !== '' && s !== 'Error')
+    let lastInternal = 'unknown'
+    let caller = ''
+    for (const f of frames) {
+      if (f.includes('client.js')) {
+        lastInternal = f
+        continue
+      }
+      caller = f
+      break
+    }
+    lastFrame = (caller !== '' ? `[外部] ${caller}` : `[内部] ${lastInternal}`).slice(0, 150)
+  }
+  const origRemove = Element.prototype.remove
+  Element.prototype.remove = function (this: Element): void {
+    noteCall(this)
+    return origRemove.call(this)
+  }
+  const origRemoveChild = Node.prototype.removeChild
+  Node.prototype.removeChild = function <T extends Node>(this: Node, child: T): T {
+    noteCall(child)
+    return origRemoveChild.call(this, child)
+  }
+  const mo = new MutationObserver((muts) => {
+    for (const mut of muts) {
+      for (const node of mut.removedNodes) {
+        if (!isSheet(node)) continue
+        const stage = document.documentElement.dataset.meowApplyStage ?? 'unknown'
+        const epoch = node.getAttribute('data-meow-sheet-epoch') ?? 'untagged(旧构建注入)'
+        const born = Number(node.getAttribute('data-meow-sheet-born') ?? '0')
+        const age = born > 0 ? `${Math.round((Date.now() - born) / 1000)}s` : '?'
+        const entry = `t=+${pageAgeSec()} 删了第${epoch}代样式表(龄${age}) via=${mut.target === document.head ? 'head' : 'parent'} stage-at-removal=${stage} frame=${lastFrame}`
+        ring.push(entry)
+        if (ring.length > 8) ring.shift()
+      }
+    }
+  })
+  mo.observe(document.head, { childList: true })
+}
+
+/** 诊断快照：FAB 存在但样式不在（sheet 缺失或 computed position 非 fixed）
+ *  即判定 bug 态，返回要显示的纯文本；健康态返回 broken=false。 */
+function fabBugSnapshot(): { broken: boolean; detail: string } {
+  const fab = document.querySelector('[data-meow-smooth-fab]')
+  if (fab === null) return { broken: false, detail: '' }
+  const sheetOk = document.querySelector('style[data-meow-fold-css]') !== null
+  const position = getComputedStyle(fab).position
+  if (sheetOk && position === 'fixed') return { broken: false, detail: '' }
+  const w = window as unknown as Record<string, unknown>
+  const de = document.documentElement
+  const ring = (w[SHEET_REMOVAL_RING] as string[] | undefined) ?? []
+  const stage = de.dataset.meowApplyStage ?? 'unknown'
+  const gestureTag = de.dataset.meowSmoothGestureLoaded ?? 'none'
+  const applyRuns = (w.__meowApplyCount as number | undefined) ?? 0
+  const liveEpoch = (w.__meowLiveSheetEpoch as number | undefined) ?? '?'
+  const overflow = Math.max(0, de.scrollHeight - de.clientHeight)
+  const applyLog = (w.__meowApplyLog as string[] | undefined)?.join(' ;; ') ?? 'none'
+  const removals = ring.length === 0 ? '无删除记录(非删除所致,多半是注入就没成功)' : ring.join('\n')
+  const inlineH = fab.getAttribute('style') ?? 'none'
+  return {
+    broken: true,
+    detail: `meow-smooth 异常：小方块样式丢失，正以裸按钮形态撑高页面(可上推)。bundleRev=${BUGWATCH_REV} gestureTag=${gestureTag} applyRuns=${applyRuns} stage=${stage} sheet=${sheetOk ? 'ok' : 'missing'} liveSheetEpoch=${liveEpoch} position=${position} 文档撑高=${overflow}px pageAge=+${pageAgeSec()} fabInlineStyle=${inlineH}\n[apply 运行史] ${applyLog}\n[样式表删除记录] ${removals}`,
+  }
+}
+
+function installBugWatch(): void {
+  const w = window as unknown as Record<string, unknown>
+  ;(w.__meowSmoothBugWatchStop as (() => void) | undefined)?.()
+  installSheetForensics()
+  const check = (): void => {
+    const prev = document.getElementById(BUG_BANNER_ID)
+    let snap = fabBugSnapshot()
+    if (snap.broken) {
+      // 自愈兜底：样式表莫名消失（根因=data-plugin 认领连坐，已打标根治；
+      // 此处防未知的未知）→ 立即用本 bundle 的 FOLD_CSS 重建。重建后下一
+      // 次快照即健康，横幅只闪现不到一秒；若反复被删，apply 运行史会留下
+      // 拉锯记录，横幅也持续在场。
+      const fab = document.querySelector('[data-meow-smooth-fab]')
+      if (fab !== null && document.querySelector('style[data-meow-fold-css]') === null) {
+        document.querySelector('style[data-meow-fold-css]')?.remove()
+        const style = document.createElement('style')
+        style.dataset.meowFoldCss = 'true'
+        style.dataset.plugin = 'meow-smooth'
+        const epoch = ((w.__meowSheetEpoch as number | undefined) ?? 0) + 1
+        w.__meowSheetEpoch = epoch
+        w.__meowLiveSheetEpoch = epoch
+        style.dataset.meowSheetEpoch = String(epoch)
+        style.dataset.meowSheetBorn = String(Date.now())
+        style.textContent = FOLD_CSS
+        document.head.appendChild(style)
+        applyLogPush(`watchdog self-heal 重建样式表 epoch=${epoch} pageAge=+${pageAgeSec()}`)
+        snap = fabBugSnapshot()
+      }
+    }
+    if (!snap.broken) {
+      if (prev !== null) {
+        prev.remove()
+      }
+      return
+    }
+    if (prev !== null) {
+      if (prev.textContent !== snap.detail) prev.textContent = snap.detail
+      return
+    }
+    const line = document.createElement('div')
+    line.id = BUG_BANNER_ID
+    line.textContent = snap.detail
+    line.style.whiteSpace = 'pre-wrap'
+    line.style.wordBreak = 'break-all'
+    document.body.appendChild(line)
+  }
+  // 首检延迟 1.2s：热替换当帧样式尚未重注入，立刻查会闪报。
+  window.setTimeout(check, 1200)
+  const timer = window.setInterval(check, 1000)
+  w.__meowSmoothBugWatchStop = (): void => { window.clearInterval(timer) }
+}
+
 /** 浏览器端插件体：注入 CSS + 事件委托 + 注册 composer.dock 隐形条目。 */
-export const inject = ['slots', 'layout', 'sessions', 'conversation', 'settingsScope']
+// settingsScope 不进强制 inject：dsh 0.1.7 移除了该客户端服务，写进清单会让
+// 整个插件 pending（"waiting for service: settingsScope"）。官方纪律=只 inject
+// 必需服务，可选服务走 ctx 软取——下方 useBusyEnter 处已有 ctx.get('settingsScope')
+// 缺省回退（undefined → 组件按 queue 兜底）；0.1.6 上服务仍在，行为不变。
+export const inject = ['slots', 'layout', 'sessions', 'conversation']
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any): void {
   // 排障分段标记：确认 apply 执行到哪一段（rev-lag 时区分新旧 bundle）。
   document.documentElement.dataset.meowApplyStage = 'enter'
+  // apply 运行史：跨热替换累计计数 + 日志（横幅据此判断页面上跑过几轮
+  // apply、各自结局——混合 rev 排查的核心证据）。
+  const wApply = window as unknown as Record<string, unknown>
+  const applyN = ((wApply.__meowApplyCount as number | undefined) ?? 0) + 1
+  wApply.__meowApplyCount = applyN
+  applyLogPush(`#${applyN} enter rev=${BUGWATCH_REV} pageAge=+${pageAgeSec()}`)
   // 单实例拆除协议（2026-08-25 边栏循环动画 bug 根治）：dsh 模块热替换会
   // 在不刷新页面的情况下重新执行本脚本，旧实例的定时器/监听器此前从不
   // 拆除——新旧实例并存且内部状态分歧时（如旧实例 railRevealed=true、
@@ -2250,6 +2499,9 @@ export function apply(ctx: any): void {
   // 同款协议：新实例入口先拆旧实例全部运行期资源，再安装自己。
   const w = window as unknown as Record<string, unknown>
   ;(w.__meowSmoothClientDispose as (() => void) | undefined)?.()
+  // 降级看门狗（放在一切早退之前）：无论 apply 走到哪个结局都保持运行，
+  // bug 态（孤儿 FAB + 样式表丢失）在页面最底一行以纯文本现形。
+  installBugWatch()
   /** 本实例登记的拆除函数清单（安装完成后打包挂 window）。 */
   const disposers: Array<() => void> = []
   // UI 注入开关（2026-08-20 为"录优化前原生界面素材"加，轻量 URL 方案）：
@@ -2261,6 +2513,8 @@ export function apply(ctx: any): void {
   // ui=off 的执行同样接管清理责任，旧实例不会残留。）
   if (new URLSearchParams(window.location.search).get('meow-smooth-ui') === 'off') {
     console.log('[meow-smooth] UI injection OFF (meow-smooth-ui=off) — native UI only')
+    document.documentElement.dataset.meowApplyStage = 'exit:ui-off'
+    applyLogPush(`#${applyN} exit:ui-off`)
     return
   }
   // 服务可用性前置检查（原在监听器安装之后）：缺失时不留下"半安装"状态
@@ -2268,11 +2522,15 @@ export function apply(ctx: any): void {
   const slots = ctx?.slots
   if (slots === undefined || typeof slots.inject !== 'function') {
     console.warn('[meow-smooth] slots service unavailable; sidebar auto-collapse disabled')
+    document.documentElement.dataset.meowApplyStage = 'exit:no-slots'
+    applyLogPush(`#${applyN} exit:no-slots`)
     return
   }
   const layout = ctx?.layout as ILayout | undefined
   if (layout === undefined || typeof layout.toggleSidebar !== 'function') {
     console.warn('[meow-smooth] layout service unavailable; sidebar auto-collapse disabled')
+    document.documentElement.dataset.meowApplyStage = 'exit:no-layout'
+    applyLogPush(`#${applyN} exit:no-layout`)
     return
   }
   // CSS 常驻全局（折叠由 data 属性驱动，规则在即生效）。先移除上一份同
@@ -2280,6 +2538,17 @@ export function apply(ctx: any): void {
   document.querySelector('style[data-meow-fold-css]')?.remove()
   const style = document.createElement('style')
   style.dataset.meowFoldCss = 'true'
+  // 0.1.6 模块加载器会认领页面全部无主 <style>（style:not([data-plugin])）
+  // 划给"当前工厂"，该插件被热替换时连坐处决——本插件的样式表必须自带
+  // data-plugin 标，认领扫描才会绕开（左下角鲸鱼按钮 bug 的根因，2026-09-20 法证实锤）。
+  style.dataset.plugin = 'meow-smooth'
+  // 样式表"代数"：每次注入自增并烙在元素上，删除法证据此判断被删的是
+  // 当代还是上一代（上一代被删=热替换 dispose；当代被删=另有其人）。
+  const sheetEpoch = ((w.__meowSheetEpoch as number | undefined) ?? 0) + 1
+  w.__meowSheetEpoch = sheetEpoch
+  w.__meowLiveSheetEpoch = sheetEpoch
+  style.dataset.meowSheetEpoch = String(sheetEpoch)
+  style.dataset.meowSheetBorn = String(Date.now())
   style.textContent = FOLD_CSS
   document.head.appendChild(style)
   disposers.push(() => { style.remove() })
@@ -2308,6 +2577,7 @@ export function apply(ctx: any): void {
   supTrace('registered')
   document.addEventListener('focusin', suppressFocusIn, { capture: true })
   document.documentElement.dataset.meowApplyStage = 'suppressor-registered'
+  applyLogPush(`#${applyN} ok suppressor-registered sheetEpoch=${sheetEpoch}`)
   document.addEventListener('focusout', onFocusOut)
   document.addEventListener('pointerdown', onPointerDownCapture, { capture: true })
   document.addEventListener('keydown', onKeyDownCapture, { capture: true })
@@ -2446,6 +2716,14 @@ export function apply(ctx: any): void {
   // 手势模块平时自管双实例（新装先拆旧）；这里补登记兜"本实例整体拆除"
   // 场景（如热替换后服务缺失半途退出）：连手势监听一起清干净。
   disposers.push(() => { (w.__meowSmoothGestureDispose as (() => void) | undefined)?.() })
+  // 需求㉑ 手机端返回手势接管：浏览器网页模式里边缘后滑/返回键被系统换成
+  // history 后退（页收不到触摸，手势模块打不开边栏），哨兵在 popstate
+  // 通道把这次返回翻译成边栏开关——返回开边栏、再返回收起，页面永不因
+  // 返回退出（与 PWA standalone 主场景体验一致）。仅触屏安装，桌面返回
+  // 键行为原样。详见 back-guard.ts。
+  if (isCoarsePointer()) {
+    disposers.push(installBackGuard({ gesture: () => gestureApi }))
+  }
   const onFabClick = (): void => {
     if (railHasExtraButtons()) {
       railRevealed = true
@@ -2464,7 +2742,7 @@ export function apply(ctx: any): void {
   // 手机端：侧边栏展开时点击右侧空间 → 自动收起（click 而非 pointerdown，
   // 见 onClickDismissSidebar 注释）。v6.3 起触摸 tap 由手势模块补位收起
   // （sidebar-gesture onTouchEnd tap 分支）：touchstart 被 preventDefault
-  // 的插件表面（femwa 画布等）浏览器不再派生 click，本监听对它们失明；
+  // 的插件表面（femo 画布等）浏览器不再派生 click，本监听对它们失明；
   // 两路径经"0 档无事可做"早退天然去重。
   const onDismissClick = (event: MouseEvent): void => { onClickDismissSidebar(event, layout) }
   document.addEventListener('click', onDismissClick, { capture: true })
@@ -2498,7 +2776,7 @@ export function apply(ctx: any): void {
   // 运行时发送按钮：登记到发送按钮旁的控件行，恒显示，运行时按 busyEnter 设置承担插话/排队，非运行等同回车发送。
   // settingsScope 为可选服务，缺省时 useBusyEnter 回退 undefined（组件按 queue 兜底）。绑定在 apply 顶层执行一次：
   // useSyncExternalStore 要求 subscribe 引用稳定，若放进 inject 回调每渲染重建会触发无限重渲染导致按钮消失。
-  const settingsScope = ctx?.settingsScope
+  const settingsScope = typeof ctx?.get === 'function' ? ctx.get('settingsScope') : undefined
   const useBusyEnter = createBusyEnterHook(
     settingsScope === undefined ? undefined : settingsScope.bind({ namespace: 'ui-conversation' }),
   )

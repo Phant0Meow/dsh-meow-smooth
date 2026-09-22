@@ -73,7 +73,7 @@ interface WebServerFace {
   }): unknown
 }
 
-/** 必需服务声明：sessions 由 client-runtime 提供（dsh-femwa 同款声明）。
+/** 必需服务声明：sessions 由 client-runtime 提供（dsh-femo 同款声明）。
  *  webServer 必须显式声明（2026-08-20 实测）：rc.6 的 include 装配下
  *  ctx.get('webServer') 对未声明服务返回 undefined → 路由静默跳过
  *  （/pending 404；崩溃重启后 3080 复现）；声明后走属性访问，与
