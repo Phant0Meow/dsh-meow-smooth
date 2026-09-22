@@ -342,7 +342,7 @@ try {
   const s8 = await waitFor('FAB 点击仍可用', `() => {
     const r = (${state})()
     if (!r.ok) return { ...r, ok: false }
-    // 两态直接展开；三态先出竖条——两种都算 FAB 活着。
+    // 小方块点击直接展开；出细竖条也算 FAB 活着，两种都接受。
     return (r.track1 >= 264 && r.collapsed === false) || (Math.abs(r.track1 - 56) <= 3 && r.collapsed === true && r.furled === false)
       ? { ...r, ok: true } : { ...r, ok: false }
   }`)

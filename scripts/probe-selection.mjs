@@ -3,7 +3,7 @@
  *
  * 对指定实例做只读体检 + 真实交互测试：
  *  1. 静态状态：meow-smooth 构建标记 / furl 标记 / FAB / 侧边栏收起态 /
- *     竖条底部按钮数（三态判定）/ 手势实例 id / hold 标记；
+ *     竖条底部按钮数 / 手势实例 id / hold 标记；
  *  2. 侧边栏状态采样 5s（250ms 间隔）：无操作时是否自己抖动（弹出⇄收起）；
  *  3. 进入最近会话，挂 document capture 探针监听
  *     mousedown/mouseup/click/selectstart（记 target 链 + defaultPrevented），

@@ -122,15 +122,6 @@
  *     折叠（默认，只有小方块）→ 点小方块直接展开完整侧边栏；选会话/
  *     点边栏外收起后自动折回。展开时侧边栏内容叠一个"从上向下揭开"
  *     的辅助动画（translateY+fade），列滑出仍是本体自带的 grid 过渡。
- *     自适应切换（猫猫定稿）：竖条底部无插件按钮 → 两态（小方块 ⇄ 展开）；
- *     有插件按钮 → 三态：默认仍是折叠全屏文字，按小方块唤出细竖条（插件
- *     按钮可达）→ 按竖条顶部原生 toggle 展开 → 收起自动折回小方块。两种
- *     模式的默认态都是折叠。判定方式：竖条常驻 DOM（折叠时只是隐藏），
- *     运行时数竖条底部区（footArea）的按钮数——官方只有设置齿轮 1 个，
- *     第三方插件能加按钮的唯一扩展点是 sidebar.footer.action（list 槽，
- *     渲染在底部区），超出 1 个即三态。不数工作区区域：展开态那里是整棵
- *     会话树，settle 前后数量不一致会抖动误判。判定每次同步都跑，插件
- *     热装/热卸自动跟随（实测 3081 的 dsh-femwa 🎭 按钮即走三态）。
  *     实现：frame 的 data-sidebar-collapsed 是本体契约属性；furl 标记挂
  *     documentElement（不随 React 重渲染丢失）；grid-template-columns 用
  *     !important 压过 inline style 归零第一轨（窄屏 details 轨道恒为 0，
@@ -471,7 +462,7 @@ html, body { touch-action: manipulation; }
 }
 [${PENDING_BAR_ATTR}][data-mode="fail"] .toast-sub { display: none; }
 [${PENDING_BAR_ATTR}][data-mode="fail"] .toast-fail { display: block; }
-/* ---- 功能⑱ 手机端竖条折叠为小方块（furl，两态/三态自适应）---- */
+/* ---- 功能⑱ 手机端竖条折叠为小方块 furl ---- */
 /* 轨道归零：grid-template-columns 是 AppFrame 的 inline style（React 每次
    渲染都会重写），必须 !important 才能压过。窄屏下第三轨（details）恒为
    0——computeColumns 在视口 <996px 时 details 必然解出 0，写死安全。
@@ -1501,20 +1492,10 @@ function maybeCollapseSidebar(layout: ILayout): void {
   syncSidebarFurl() // 功能⑱：选会话收起后立即折回小方块
 }
 
-// --- 功能⑱ 手机端竖条折叠为小方块（furl，两态/三态自适应）---
+// --- 功能⑱ 手机端竖条折叠为小方块 furl ---
 
-/** 官方竖条底部区按钮基线（1 = 设置齿轮）。第三方插件能往竖条上加按钮
- *  的唯一扩展点是 sidebar.footer.action（list 槽），渲染在底部区——所以
- *  只数底部区（footArea）的按钮：超出 1 个即认定有插件用了竖条 → 小方块
- *  改走三态（按一下先出竖条，插件按钮可达），否则两态（直接展开）。
- *  不数工作区区域：那里展开态是整棵会话树（每行还挂操作按钮），收起
- *  动画 settle 前后数量不一致，会造成计数抖动误判；新会话按钮/toggle
- *  是官方固定件也无需数。竖条折叠期间只是 visibility:hidden，DOM 常驻，
- *  任何时刻都能数；判定每次同步都跑，插件热装/热卸自动跟随。 */
-const OFFICIAL_FOOT_BUTTONS = 1
-
-/** layout 服务是否就绪（apply 里检查后置 true）：两态的"展开"依赖
- *  ctx.layout.toggleSidebar，服务缺失时绝不折叠（否则用户没有入口）。 */
+/** layout 服务是否就绪，apply 里检查后置 true：展开依赖
+ *  ctx.layout.toggleSidebar，服务缺失时绝不折叠，否则用户没有入口。 */
 let layoutReady = false
 
 /** furl 标记读写。 */
@@ -1538,26 +1519,8 @@ function railToggleButton(): HTMLButtonElement | null {
   return buttons.length > 0 ? buttons[buttons.length - 1] : null
 }
 
-/** 竖条自适应切换判定：数竖条底部区（footArea = 渲染列最后一个子元素）
- *  的 button 数，超出官方基线（1 个设置齿轮）即认定 sidebar.footer.action
- *  槽位有插件加了按钮 → 小方块走三态（按一下先出竖条，插件按钮可达），
- *  否则两态（按一下直接展开）。列未挂载按"无额外"处理（等挂载后下个
- *  tick 再判）。 */
-function railHasExtraButtons(): boolean {
-  const column = document.querySelector('[data-slot="sidebar"] > *')
-  const foot = column?.lastElementChild ?? null
-  if (foot === null) return false
-  return foot.querySelectorAll('button').length > OFFICIAL_FOOT_BUTTONS
-}
-
-/** 三态模式：用户经小方块唤出过竖条（中间态）——true 期间轮询不得重新
- *  折叠；展开⇄收起转换时复位，收起即回折叠态。两态模式不使用。 */
-let railRevealed = false
-/** 上一次观测到的收起态（检测展开⇄收起转换用）；null = 尚未观测。 */
-let lastRailCollapsed: boolean | null = null
-
-/** 小方块按钮（body 直接子级，一次性创建）。点击行为在 apply 里接线
- *  （需要 layout 服务）：解除 furl 并直接展开完整侧边栏（两态）。 */
+/** 小方块按钮，body 直接子级，一次性创建。点击行为在 apply 里接线，
+ *  需要 layout 服务：解除 furl 并直接展开完整侧边栏。 */
 function sidebarFab(): HTMLButtonElement {
   const existing = document.querySelector<HTMLButtonElement>(`[${FAB_ATTR}]`)
   if (existing !== null) return existing
@@ -1632,11 +1595,9 @@ function syncFabHeight(): void {
   fab.style.height = `${h}px`
 }
 
-/** 功能⑱状态同步（两态/三态自适应）：手机端（粗指针）+ 窄屏 + 侧边栏
- *  收起态 → 折叠成小方块（两种模式的默认态都是折叠）；展开态/宽屏/桌面
- *  一律还原原生。三态模式下"用户唤出过竖条"期间不重新折叠（竖条是
- *  中间态），展开⇄收起转换时复位。幂等，双通道驱动：500ms 轮询兜底
- *  （原生收起路径无钩子）+ 插件自身的收起动作后直调（即时折叠不闪竖条）。 */
+/** 功能⑱状态同步：手机端粗指针 + 窄屏 + 侧边栏收起态 → 折叠成小方块；
+ *  展开态/宽屏/桌面一律还原原生。幂等，双通道驱动：500ms 轮询兜底，
+ *  原生收起路径无钩子，加插件自身的收起动作后直调，即时折叠不闪竖条。 */
 function syncSidebarFurl(): void {
   // 手势进行中（需求⑲）一切自动折叠/展开干预冻结：拖拽里 enterDrag 已
   // 解除 furl 让 rail 本体跟手，此刻 tick 若再折回会毁掉拖拽状态。
@@ -1651,18 +1612,10 @@ function syncSidebarFurl(): void {
   if (frame === null) return
   const narrow = frame.getBoundingClientRect().width < SIDEBAR_AUTO_COLLAPSE
   const collapsed = frame.hasAttribute('data-sidebar-collapsed')
-  if (lastRailCollapsed !== null && collapsed !== lastRailCollapsed) railRevealed = false
-  lastRailCollapsed = collapsed
-  // 已回 0 档（collapsed+furled）＝三态中间态结束：rail⇄小方块之间
-  // data-sidebar-collapsed 全程不变，上面的转换检测清不掉 railRevealed
-  // ——留着它会让本函数在下一个 tick 走"不得重新折叠"分支强制解除
-  // furl，竖条"点外部收起后又立即弹回"（2026-08-28 猫猫报，3081 独有：
-  // 三态模式只有装了侧栏插件的实例在走，3080 两态从不置 railRevealed）。
-  if (collapsed && furlRoot()) railRevealed = false
-  if (!narrow) gestureApi?.clearHold() // 离开窄屏（转宽屏/桌面）：窄档保持失效
-  // 窄档停留（需求⑲手势拉出的原生 rail）与三态中间态一样是合法的收起
-  // 停留态：不折回小方块，直到用户推回到 0（furl 分支会清 hold）。
-  if (!narrow || !collapsed || railRevealed || gestureApi?.narrowHold() === true) {
+  if (!narrow) gestureApi?.clearHold() // 离开窄屏，转宽屏或桌面：窄档保持失效
+  // 窄档停留，即需求⑲手势拉出的原生 rail，是合法的收起停留态：不折回小方块，
+  // 直到用户推回到 0，furl 分支会清 hold。
+  if (!narrow || !collapsed || gestureApi?.narrowHold() === true) {
     if (furlRoot()) setFurled(false)
     return
   }
@@ -2244,8 +2197,8 @@ export function apply(ctx: any): void {
   document.documentElement.dataset.meowApplyStage = 'enter'
   // 单实例拆除协议（2026-08-25 边栏循环动画 bug 根治）：dsh 模块热替换会
   // 在不刷新页面的情况下重新执行本脚本，旧实例的定时器/监听器此前从不
-  // 拆除——新旧实例并存且内部状态分歧时（如旧实例 railRevealed=true、
-  // 新实例全新状态），两边的 syncSidebarFurl 轮询互踢 furl 标记，边栏陷入
+  // 拆除——新旧实例并存且内部状态分歧时，如旧实例冻结在窄档停留而
+  // 新实例是全新状态，两边的 syncSidebarFurl 轮询互踢 furl 标记，边栏陷入
   // "展开到细条⇄收到 0"的永动循环。与手势模块 __meowSmoothGestureDispose
   // 同款协议：新实例入口先拆旧实例全部运行期资源，再安装自己。
   const w = window as unknown as Record<string, unknown>
@@ -2427,11 +2380,10 @@ export function apply(ctx: any): void {
     window.visualViewport?.removeEventListener('scroll', pinBar)
     if (furlTick !== 0) window.clearInterval(furlTick)
   })
-  // 功能⑱：layout 就绪才允许折叠（两态的"展开"依赖 toggleSidebar，服务
-  // 缺失时绝不能把用户入口藏掉）。小方块常驻 body（CSS 默认 display:none，
-  // furl 态才显示）。点击按模式分流：竖条底部无插件按钮 → 两态，直接
-  // 展开完整侧边栏；有插件按钮 → 三态，按一下先唤出细竖条（插件按钮
-  // 可达），展开交给竖条顶部原生 toggle 接棒，收起后自动折回小方块。
+  // 功能⑱：layout 就绪才允许折叠，展开依赖 toggleSidebar，服务缺失时
+  // 绝不能把用户入口藏掉。小方块常驻 body，CSS 默认 display:none，
+  // furl 态才显示。点击即解除 furl 并直接展开完整侧边栏——细竖条只留
+  // 给边缘手势唤出，小方块本身不再充当它的入口。
   layoutReady = true
   // 需求⑲ 手机端边缘手势两段式抽屉：三档停留态全为官方原生态，插件只
   // 拥有过渡期（解除 furl + rAF 写轨道宽，rail 本体直接跟手）。依赖上面
@@ -2447,17 +2399,12 @@ export function apply(ctx: any): void {
   // 场景（如热替换后服务缺失半途退出）：连手势监听一起清干净。
   disposers.push(() => { (w.__meowSmoothGestureDispose as (() => void) | undefined)?.() })
   const onFabClick = (): void => {
-    if (railHasExtraButtons()) {
-      railRevealed = true
-      setFurled(false)
-      return
-    }
     setFurled(false)
     layout.toggleSidebar()
   }
   sidebarFab().addEventListener('click', onFabClick)
   // FAB 元素跨实例复用（querySelector 命中即返回）——不拆旧监听的话，一次
-  // 点按会触发 N 个实例的 handler（两态模式连点 N 次 toggle = 开了又关）。
+  // 点按会触发 N 个实例的 handler——连点 N 次 toggle 就是开了又关。
   disposers.push(() => { sidebarFab().removeEventListener('click', onFabClick) })
   syncSidebarFurl()
   const sessions = ctx?.sessions as { open?: (sessionId: string) => void; refresh?: () => Promise<void> } | undefined

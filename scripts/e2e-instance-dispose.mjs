@@ -3,7 +3,7 @@
  *
  * bug 回顾：dsh 模块热替换会在不刷新页面的前提下重新执行 client.js——旧
  * 实例的 500ms syncSidebarFurl 轮询此前从不拆除。旧实例带着热替换前的
- * 内部状态（railRevealed=true / 手势 hold=true），新实例全新状态，两边
+ * 内部状态，如手势 hold=true，新实例全新状态，两边
  * 互踢 furl 标记 → 边栏陷入"展开到细条⇄收到 0"的永动循环。
  *
  * 本脚本在真实 dsh 页面的 ?meow-smooth-ui=off 干净态上，用页面内 fetch
@@ -268,7 +268,7 @@ try {
   await evalJson(`(function(){ return JSON.stringify({ clicked: window.__meowFabClick() }) })()`)
   await sleep(250)
   st = await read()
-  check(st.toggles === baseToggles + 1, 'FAB 点击单发（两态路径 toggle 恰 +1）',
+  check(st.toggles === baseToggles + 1, 'FAB 点击单发，toggle 恰 +1',
     `${baseToggles} → ${st.toggles}`)
 
   // --- 断言 5：dispose 后零监听/零写入者 ---

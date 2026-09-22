@@ -73,15 +73,8 @@ try {
     if (r.frame === true && r.furled === true) break
     await sleep(300)
   }
-  // 三态：fab → 竖条 → toggle 展开
+  // 小方块点击直接展开
   await evalJson(`JSON.stringify((function(){ document.querySelector('[data-meow-smooth-fab]').click(); return '{}' })())`)
-  await sleep(700)
-  await evalJson(`(function(){
-    const col = document.querySelector('[data-slot="sidebar"] > *')
-    const btns = col.firstElementChild.querySelectorAll('button')
-    btns[btns.length - 1].click()
-    return '{}'
-  })()`)
   await sleep(900)
   // 点一个会话（优先 femwa 相关，退化到任意会话）；等会话树加载
   let clicked = { ok: false }

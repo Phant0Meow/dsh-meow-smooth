@@ -1,15 +1,13 @@
 /**
- * e2e：手机端竖条折叠为小方块（需求⑱ 两态/三态自适应）。裸 CDP 驱动
- * headless Edge，零 npm 依赖（Node ≥22 全局 WebSocket），对**真实运行中
- * 的 dsh 实例**做手机仿真（390×844 触屏、pointer:coarse）全链路回归。
- * 流程按实例状态自适应：
+ * e2e：手机端竖条折叠为小方块，需求⑱。裸 CDP 驱动
+ * headless Edge，零 npm 依赖，用 Node ≥22 自带的全局 WebSocket，对真实
+ * 运行中的 dsh 实例做手机仿真，390×844 触屏、pointer:coarse，全链路回归。
+ * 流程：
  *
- *  1. 初始态（两态/三态共有）：窄屏收起 → 自动 furl——html 标记挂上、
+ *  1. 初始态：窄屏收起 → 自动 furl——html 标记挂上、
  *     第一条 grid 轨道归 0、小方块可见且已克隆鱼 logo；
- *  2a. 两态（竖条底部 = 官方基线 1 个按钮）：点小方块**直接展开**；
- *  2b. 三态（底部区有插件按钮，如 3081 的 dsh-femwa 🎭）：点小方块先
- *      唤出细竖条（插件按钮可达）→ 点竖条顶部原生 toggle 展开；
- *  3. 点会话区（边栏外）→ 收起并立即折回小方块；
+ *  2. 点小方块**直接展开**完整侧边栏，不再经过细竖条；
+ *  3. 点会话区，即边栏外 → 收起并立即折回小方块；
  *  4. 展开点一个会话 → 会话页自动折回 + header margin 让位（标题不被鱼挡）
  *     + 会话内展开/折回让位复位。
  *
@@ -152,10 +150,9 @@ try {
     }
   }`
 
-  // --- 断言 1：初始自动 furl（两态/三态共有） ---
+  // --- 断言 1：初始自动 furl ---
   const s1 = await waitFor('初始 furl', state)
-  const threeState = s1.footButtons > 1
-  console.log(`mode: ${threeState ? '三态（竖条底部有插件按钮）' : '两态'} @ ${BASE}`)
+  console.log(`mode: 普通模式 @ ${BASE}`)
   check(s1.collapsed === true, '初始为收起态（本体契约）', `collapsed=${s1.collapsed}`)
   check(s1.footButtons >= 1, '竖条底部区按钮数正常', `footButtons=${s1.footButtons}`)
   check(s1.furled === true, '初始自动折叠：html furl 标记已挂', `furled=${s1.furled}`)
@@ -166,27 +163,12 @@ try {
     '小方块 = 原竖条宽度 56px 贴角切片', `left=${s1.fabRect?.left} ${s1.fabRect?.width}×${s1.fabRect?.height}`)
   // 注：新会话页的 header 是空壳（无内容），让位断言在会话页阶段做。
 
-  /** 展开侧边栏（模式自适应）：两态点小方块即展开；三态点小方块先出
-   *  竖条、再点竖条顶部原生 toggle 展开。 */
+  /** 展开侧边栏：点小方块即直接展开。 */
   async function expandForTest() {
     await evalJson(`(function(){
       document.querySelector('[data-meow-smooth-fab]').click()
       return JSON.stringify({ ok: true })
     })()`)
-    if (threeState) {
-      await waitFor('三态：唤出竖条', `() => {
-        const r = (${state})()
-        if (!r.ok) return r
-        if (r.collapsed === true && r.track1 === 56 && r.furled === false) return { ...r, ok: true }
-        return { ok: false, collapsed: r.collapsed, track1: r.track1, furled: r.furled }
-      }`)
-      await evalJson(`(function(){
-        const col = document.querySelector('[data-slot="sidebar"] > *')
-        const btns = col.firstElementChild.querySelectorAll('button')
-        btns[btns.length - 1].click()
-        return JSON.stringify({ ok: true })
-      })()`)
-    }
     await waitFor('展开', `() => {
       const frame = document.querySelector('[data-slot="root"] > *')
       if (frame === null) return { ok: false }
@@ -196,22 +178,14 @@ try {
     await sleep(400) // grid 过渡收敛
   }
 
-  if (!threeState) {
-    // --- 断言 2a（两态）：点小方块 → 直接展开 ---
-    await expandForTest()
-    const s2 = await waitFor('两态展开态', state)
-    check(s2.collapsed === false && s2.track1 >= 264, '两态：点小方块直接展开完整侧边栏', `track1=${s2.track1}px`)
-    check(s2.furled === false, 'furl 解除', `furled=${s2.furled}`)
-    check(s2.fabVisible === false, '小方块随之隐藏', '')
-  } else {
-    // --- 断言 2b（三态）：点小方块 → 竖条（插件按钮可达）→ 展开 ---
-    await expandForTest()
-    const s2 = await waitFor('三态展开态', state)
-    check(s2.collapsed === false && s2.track1 >= 264, '三态：小方块→竖条→原生 toggle→展开', `track1=${s2.track1}px`)
-    check(s2.furled === false && s2.fabVisible === false, '展开态 furl 解除、小方块隐藏', '')
-  }
+  // --- 断言 2：点小方块 → 直接展开 ---
+  await expandForTest()
+  const s2 = await waitFor('展开态', state)
+  check(s2.collapsed === false && s2.track1 >= 264, '点小方块直接展开完整侧边栏', `track1=${s2.track1}px`)
+  check(s2.furled === false, 'furl 解除', `furled=${s2.furled}`)
+  check(s2.fabVisible === false, '小方块随之隐藏', '')
 
-  // --- 断言 3：点边栏外 → 收起并立即折回小方块（两态/三态共有） ---
+  // --- 断言 3：点边栏外 → 收起并立即折回小方块 ---
   await evalJson(`(function(){
     const conv = document.querySelector('[data-slot="conversation"]') ?? document.body
     conv.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 300, clientY: 400 }))

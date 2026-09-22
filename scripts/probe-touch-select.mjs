@@ -88,7 +88,7 @@ try {
   await waitFor('frame', `() => document.querySelector('[data-slot="root"] > *') !== null ? { ok: true } : { ok: false }`, 30000)
   await sleep(1500)
 
-  // 进会话（自适应两态/三态：FAB→竖条→toggle；已在展开则直接点会话行）
+  // 进会话：小方块点击直接展开，已在展开则直接点会话行
   const nav = await evalJson(`(function(){
     const frame = document.querySelector('[data-slot="root"] > *')
     const collapsed = frame?.hasAttribute('data-sidebar-collapsed') ?? true
@@ -107,13 +107,13 @@ try {
     return JSON.stringify({ step: 'toggle' })
   })()`)
   if (nav.step === 'fab') {
-    // 两态：FAB 点击直接展开；三态：出竖条再点 toggle。等待自适应。
+    // FAB 点击直接展开。等待展开落定。
     await waitFor('侧边栏可用', `() => {
       const frame = document.querySelector('[data-slot="root"] > *')
       if (frame === null) return { ok: false }
       const furled = document.documentElement.getAttribute('data-meow-smooth-furled') === 'true'
       if (furled) return { ok: false, why: 'still-furled' }
-      // 两态已展开 / 三态出竖条都算"可用"，据此决定要不要补点 toggle
+      // 已展开或仍在细竖条都算可用，据此决定要不要补点 toggle
       return { ok: true, collapsed: frame.hasAttribute('data-sidebar-collapsed') }
     }`)
     const st = await evalJson(`(function(){
