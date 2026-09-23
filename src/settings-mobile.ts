@@ -247,6 +247,9 @@ export function installSettingsMobile(): () => void {
   document.querySelector('style[data-meow-smooth-settings-css]')?.remove()
   const style = document.createElement('style')
   style.dataset.meowSettingsCss = 'true'
+  // 0.1.6 模块加载器认领无主 <style> 并在其他插件热替换时连坐删除——必须
+  // 自报家门（同 client.ts 主样式表，左下角鲸鱼按钮 bug 根因）。
+  style.dataset.plugin = 'meow-smooth'
   style.textContent = SETTINGS_CSS
   document.head.appendChild(style)
 

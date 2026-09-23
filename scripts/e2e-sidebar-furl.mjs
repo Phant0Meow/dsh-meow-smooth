@@ -255,7 +255,7 @@ try {
   }`)
   check(s7.titleMargin === '56px', '会话内折回后重新让位', `margin=${s7.titleMargin}`)
 
-  // --- 断言 6（可选，dsh-femwa 装配的实例）：全屏视图盖住 header → 色块退场 ---
+  // --- 断言 6（可选，dsh-femo 装配的实例）：全屏视图盖住 header → 色块退场 ---
   // femGen 画布（Fem 编辑器标签）盖在 header 上面时，header 显示态正常
   // （display:block）但视觉上被顶掉——覆盖检测应让色块同步退场；切回
   // 对话标签后回归。

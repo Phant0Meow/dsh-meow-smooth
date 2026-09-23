@@ -76,13 +76,13 @@ try {
   // 小方块点击直接展开
   await evalJson(`JSON.stringify((function(){ document.querySelector('[data-meow-smooth-fab]').click(); return '{}' })())`)
   await sleep(900)
-  // 点一个会话（优先 femwa 相关，退化到任意会话）；等会话树加载
+  // 点一个会话（优先 femo 相关，退化到任意会话）；等会话树加载
   let clicked = { ok: false }
   for (let i = 0; i < 30; i++) {
     clicked = await evalJson(`(function(){
       const column = document.querySelector('[data-slot="sidebar"] > *')
       const all = [...column.querySelectorAll('div[role="treeitem"]')].filter(b => /分钟|小时|天/.test(b.textContent))
-      const rows = all.filter(b => /femwa|调试|视角|剧本/.test(b.textContent))
+      const rows = all.filter(b => /femo|调试|视角|剧本/.test(b.textContent))
       const target = rows[0] ?? all[0]
       if (target === undefined) return JSON.stringify({ ok: false, total: all.length })
       target.click()

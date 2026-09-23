@@ -27,7 +27,10 @@
  * 零 DOM 写入——只在识别完成后调用一次官方状态切换，性能天然最优。
  *
  * 已知局限（平台限制）：浏览器网页模式里左缘内滑会被系统前进/后退手势
- * 抢走；PWA（添加到主屏幕，主场景）无此问题。
+ * 抢走（页面收到 touchcancel，本模块识别不到）；PWA（添加到主屏幕，
+ * 主场景）无此问题。浏览器模式由需求㉑ back-guard.ts 在 popstate 通道
+ * 把这次返回翻译成边栏开关（返回开边栏、再返回收起），两种模式体验
+ * 对齐。
  */
 
 /** 窄档宽度 = 官方收起态竖条宽度（ui-sidebar rail 契约）。 */
@@ -41,7 +44,7 @@ const LONG_SWIPE = 110
 /** 横向主导判定系数：|dx| > |dy| × 此值才算横滑。 */
 const AXIS_RATIO = 1.2
 /** 轻点判定：起手后累计位移 ≤ 此值、且时长 ≤ TAP_MAX_MS 才算 tap
- *  （位移超过=滚动手势起点；时长超过=长按拖拽语义，如 femwa 画布 200ms
+ *  （位移超过=滚动手势起点；时长超过=长按拖拽语义，如 femo 画布 200ms
  *  即转入节点拖拽/画布平移，绝不能替用户收边栏）。 */
 const TAP_SLOP = 12
 const TAP_MAX_MS = 300
@@ -74,6 +77,16 @@ export interface GestureApi {
   collapseToZero(): boolean
   /** 手势识别或收起序列进行中：syncSidebarFurl 等外部干预据此让路。 */
   busy(): boolean
+  /** 抽屉是否展开（宽档在场；收起态 0 档/窄档一律算"关"）。返回手势接管
+   *  （back-guard.ts）据此区分开/关。刻意不掺入 furl 标记：furl 由 500ms
+   *  tick 异步初始化，启动初期的"已折叠未 furl"窗口里掺入会把关闭态误判
+   *  成开启、走窄档收起分支悄悄无效果——只看 collapsed 保证开/关两个方向
+   *  都必然产生可见变化。 */
+  isOpen(): boolean
+  /** 编程式打开宽档（0 档/窄档 → 完整侧边栏；桌面宽度无操作）。返回
+   *  手势接管（back-guard.ts）用：浏览器模式里边缘返回被系统换成
+   *  history 后退，页收不到触摸，只能经 popstate 通道翻译成开边栏。 */
+  open(): void
 }
 
 /** 手势期规则（安装时注入一次）：触屏下 sidebar 子树 touch-action: pan-y
@@ -110,6 +123,10 @@ export function installSidebarGesture(deps: GestureDeps): GestureApi {
   if (prevStyle !== null) prevStyle.remove()
   const style = document.createElement('style')
   style.setAttribute('data-meow-smooth-gesture-css', 'true')
+  // 0.1.6 模块加载器认领无主 <style>（style:not([data-plugin])）划给当前
+  // 工厂、其他插件热替换时连坐删除——必须自报家门（同 client.ts 主样式表，
+  // 左下角鲸鱼按钮 bug 根因）。
+  style.setAttribute('data-plugin', 'meow-smooth')
   style.textContent = GESTURE_CSS
   document.head.appendChild(style)
 
@@ -266,7 +283,7 @@ export function installSidebarGesture(deps: GestureDeps): GestureApi {
       // 侧边栏在场时会置）且位移/时长都是 tap 量级 → 收起到 0 档。
       //
       // 为什么必须走 touch 而不能只靠 client.ts 的 click 收起：第三方插件
-      // 常在自家表面的 touchstart 上 preventDefault（femwa 剧本画布为掐灭
+      // 常在自家表面的 touchstart 上 preventDefault（femo 剧本画布为掐灭
       // 安卓长按选字即如此）——浏览器对被取消的 touch 序列不再派生任何鼠
       // 标事件，click 永远不来，onClickDismissSidebar 对那些表面失明。本
       // 模块的 document 级 touch 监听是 passive 捕获，不受影响，是唯一可
@@ -340,5 +357,11 @@ export function installSidebarGesture(deps: GestureDeps): GestureApi {
     },
     collapseToZero,
     busy: () => phase !== 'idle',
+    isOpen: () => !collapsedNow(),
+    open: (): void => {
+      const frame = frameOf()
+      if (frame === null || frame.getBoundingClientRect().width >= 1024) return
+      openWide()
+    },
   }
 }
