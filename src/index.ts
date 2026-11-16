@@ -49,6 +49,8 @@ interface PendingQuestionView {
   title?: string
 }
 
+import { statSync } from 'node:fs'
+import { join } from 'node:path'
 import { installNotifyHost, sessionEventsOf } from './notify-host.ts'
 import { startCompressProxy, resolveTargetPort, detectOfficialGzip } from './compress-proxy.ts'
 import { connectionAuthOf, authGate } from './auth-gate.ts'
@@ -115,9 +117,211 @@ export interface Config extends Record<string, any> {
   }
 }
 
+/**
+ * Memoize host `configEditor.configuration()` and `settings.describe()` against
+ * immutable profile metadata & active fiber/presentation signatures, returning
+ * isolated clones and invalidating immediately on any mutation or reload event.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function installConfigDescribeCache(ctx: any): void {
+  if (typeof ctx?.inject !== 'function') return
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ctx.inject(['configEditor', 'settings'], (sctx: any) => {
+    const configEditor = typeof sctx?.get === 'function' ? sctx.get('configEditor') : sctx?.configEditor
+    const settings = typeof sctx?.get === 'function' ? sctx.get('settings') : sctx?.settings
+    if (!configEditor && !settings) return
+    const configCache = new Map<string, { sig: string; value: unknown }>()
+    const describeCache = new Map<string, { sig: string; value: unknown }>()
+    const invalidate = (): void => {
+      configCache.clear()
+      describeCache.clear()
+    }
+    const cloneValue = (value: unknown): unknown => {
+      if (value === null || typeof value !== 'object') return value
+      try {
+        return structuredClone(value)
+      } catch {
+        if (Array.isArray(value)) {
+          return value.map((item) => {
+            if (item === null || typeof item !== 'object') return item
+            try {
+              return structuredClone(item)
+            } catch {
+              const rec = item as Record<string, unknown>
+              return {
+                ...rec,
+                ...('inherited' in rec ? { inherited: cloneValue(rec.inherited) } : {}),
+                ...('override' in rec ? { override: cloneValue(rec.override) } : {}),
+              }
+            }
+          })
+        }
+        return value
+      }
+    }
+    const statSig = (p: unknown): string => {
+      if (typeof p !== 'string' || p === '') return ''
+      try {
+        const st = statSync(p)
+        return `${st.mtimeMs}:${st.size}:${st.ino}`
+      } catch {
+        return 'missing'
+      }
+    }
+    const computeSignature = (): string => {
+      const pctx = configEditor?.ownerContext?.profileContext ?? configEditor?.profileContext ?? sctx?.profileContext ?? ctx?.profileContext
+      const dir = typeof pctx?.dir === 'string' ? pctx.dir : ''
+      const patchPath = typeof pctx?.patchPath === 'string' ? pctx.patchPath : dir !== '' ? join(dir, 'cordis.patch.yml') : ''
+      const pkgPath = dir !== '' ? join(dir, 'package.json') : ''
+      const nmPath = dir !== '' ? join(dir, 'node_modules') : ''
+      let entriesSig = ''
+      try {
+        if (typeof configEditor?.entries === 'function') {
+          const parts: string[] = []
+          for (const e of configEditor.entries()) {
+            parts.push(`${e?.id ?? ''}:${e?.fiber?.uid ?? ''}:${e?.fiber?.state ?? ''}`)
+          }
+          entriesSig = `${parts.length}[${parts.join(',')}]`
+        }
+      } catch {
+        entriesSig = 'err'
+      }
+      let presSig = ''
+      try {
+        const pres = settings?.presentations
+        if (pres instanceof Map) {
+          presSig = `m:${pres.size}:${[...pres.keys()].join(',')}`
+        } else if (pres && typeof pres === 'object') {
+          presSig = `o:${Object.keys(pres).join(',')}`
+        }
+      } catch {
+        presSig = 'err'
+      }
+      return `${statSig(patchPath)}|${statSig(pkgPath)}|${statSig(nmPath)}|${entriesSig}|${presSig}`
+    }
+    const keyOfArgs = (args: unknown[]): string => {
+      if (args.length === 0) return ''
+      try {
+        const first = args[0]
+        if (first && typeof first === 'object' && !Array.isArray(first)) {
+          const sorted: Record<string, unknown> = {}
+          const rec = first as Record<string, unknown>
+          for (const k of Object.keys(rec).sort()) sorted[k] = rec[k]
+          return JSON.stringify([sorted, ...args.slice(1)])
+        }
+        return JSON.stringify(args)
+      } catch {
+        return String(args.length)
+      }
+    }
+    const restores: Array<() => void> = []
+    if (configEditor && typeof configEditor.configuration === 'function') {
+      const origConfiguration = configEditor.configuration
+      configEditor.configuration = function (...args: unknown[]): unknown {
+        const sig = computeSignature()
+        const key = keyOfArgs(args)
+        const hit = configCache.get(key)
+        if (hit !== undefined && hit.sig === sig) {
+          return cloneValue(hit.value)
+        }
+        const res = origConfiguration.apply(this, args)
+        configCache.set(key, { sig, value: cloneValue(res) })
+        return res
+      }
+      restores.push(() => {
+        configEditor.configuration = origConfiguration
+      })
+    }
+    if (settings && typeof settings.describe === 'function') {
+      const origDescribe = settings.describe
+      settings.describe = function (...args: unknown[]): unknown {
+        const sig = computeSignature()
+        const key = keyOfArgs(args)
+        const hit = describeCache.get(key)
+        if (hit !== undefined && hit.sig === sig) {
+          return cloneValue(hit.value)
+        }
+        const res = origDescribe.apply(this, args)
+        describeCache.set(key, { sig, value: cloneValue(res) })
+        return res
+      }
+      restores.push(() => {
+        settings.describe = origDescribe
+      })
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wrapMutator = (obj: any, methodName: string): void => {
+      if (!obj || typeof obj[methodName] !== 'function') return
+      const orig = obj[methodName]
+      obj[methodName] = function (...args: unknown[]): unknown {
+        invalidate()
+        try {
+          const res = orig.apply(this, args) as { then?: unknown } | ((...dArgs: unknown[]) => unknown) | undefined
+          if (res && typeof (res as { then?: unknown }).then === 'function') {
+            return (res as Promise<unknown>).then(
+              (v) => {
+                invalidate()
+                return v
+              },
+              (e) => {
+                invalidate()
+                throw e
+              },
+            )
+          }
+          if (typeof res === 'function') {
+            return (...dArgs: unknown[]): unknown => {
+              try {
+                return res.apply(this, dArgs)
+              } finally {
+                invalidate()
+              }
+            }
+          }
+          invalidate()
+          return res
+        } catch (err) {
+          invalidate()
+          throw err
+        }
+      }
+      restores.push(() => {
+        obj[methodName] = orig
+      })
+    }
+    for (const m of ['edit', 'update', 'replace', 'mutate', 'configure', 'invalidate']) {
+      wrapMutator(configEditor, m)
+      wrapMutator(settings, m)
+    }
+    const onFn = typeof sctx?.on === 'function' ? sctx.on.bind(sctx) : typeof ctx?.on === 'function' ? ctx.on.bind(ctx) : undefined
+    if (onFn) {
+      for (const ev of ['app-boot/config-reload', 'hmr/reload', 'settings/document-updated']) {
+        const off = onFn(ev, invalidate)
+        if (typeof off === 'function') restores.push(off as () => void)
+      }
+    }
+    const cleanup = (): void => {
+      invalidate()
+      for (const restore of restores.splice(0)) {
+        try {
+          restore()
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    if (typeof sctx?.effect === 'function') {
+      sctx.effect(() => cleanup, 'meow-smooth: config describe cache')
+    } else if (typeof ctx?.effect === 'function') {
+      ctx.effect(() => cleanup, 'meow-smooth: config describe cache')
+    }
+  })
+}
+
 /** Host loader entry for the browser-only fold plugin. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function apply(ctx: any, config?: Config): void {
+  installConfigDescribeCache(ctx)
   // cordis 严格模式：ctx.<service> 属性必须经 inject 声明；可选服务用
   // ctx.get(name) 读全局 store（未注册返回 undefined → 对应能力降级）。
   // rc.6 include 装配下 ctx.get 不命中未声明服务（实测 404）→ 先试

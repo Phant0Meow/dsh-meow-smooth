@@ -37,12 +37,12 @@ const BREAKPOINT = '(max-width: 1023px)'
 
 /** 设置面板专用的移动端 CSS：全窗口 + 边栏收起/展开状态机。 */
 const SETTINGS_CSS = `
-/* 需求 16：手机端设置页改造。属性由 settings-mobile.ts 管理；桌面（宽屏）
-   无属性，以下全部不生效。 */
+/* 需求 16：手机端设置页改造。属性由 settings-mobile.ts 管理；桌面（宽屏、Windows/macOS 标题栏客户端及非粗指针桌面）
+   不生效，避免设置弹窗在窄桌面窗口压住标题栏与窗口控件。 */
 @media (max-width: 1023px) {
   /* 1. 浮层全窗口：面板铺满 overlay（fixed inset:0 的 flex 容器），
      无上下左右空隙；圆角/阴影不再需要。 */
-  div[role="dialog"][${SETTINGS_ATTR}] {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}] {
     width: 100% !important;
     height: 100% !important;
     max-width: none !important;
@@ -50,29 +50,29 @@ const SETTINGS_CSS = `
     box-shadow: none !important;
   }
   /* 2/4. 边栏宽度动画（收起/展开共用一条 transition，双向平滑）。 */
-  div[role="dialog"][${SETTINGS_ATTR}] > nav {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}] > nav {
     transition: width 220ms cubic-bezier(0.2, 0.8, 0.3, 1),
                 padding 220ms cubic-bezier(0.2, 0.8, 0.3, 1);
   }
   /* 标签的显示/隐藏动画：宽度与透明度联动（收起归零、展开滑出）。 */
-  div[role="dialog"][${SETTINGS_ATTR}] > nav > div > button > span {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}] > nav > div > button > span {
     transition: max-width 220ms cubic-bezier(0.2, 0.8, 0.3, 1),
                 opacity 150ms ease;
   }
   /* 初始落位不播动画：面板刚插入时属性后置（MutationObserver 微任务晚于
      元素首帧样式）会让浏览器把"188px 原生态 → 收起态"也当过渡来播，
      打开瞬间闪一下。noanim 标记在首帧压制 transition，下一帧由 JS 摘除。 */
-  div[role="dialog"][${SETTINGS_ATTR}][${NOANIM_ATTR}] > nav,
-  div[role="dialog"][${SETTINGS_ATTR}][${NOANIM_ATTR}] > nav > div > button > span {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}][${NOANIM_ATTR}] > nav,
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}][${NOANIM_ATTR}] > nav > div > button > span {
     transition: none;
   }
   /* 边栏右侧 1px 边线：引导用户识别"边栏 / 内容"两个区域。伪元素不占
      布局宽度（border 会吃掉内容宽导致按钮 36px 溢出被压缩），随宽度
      动画贴右缘移动。 */
-  div[role="dialog"][${SETTINGS_ATTR}] > nav {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}] > nav {
     position: relative;
   }
-  div[role="dialog"][${SETTINGS_ATTR}] > nav::after {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}] > nav::after {
     content: '';
     position: absolute;
     top: 0;
@@ -83,13 +83,14 @@ const SETTINGS_CSS = `
   }
   /* 收起态（默认）：56px 图标竖列——与 dsh 主界面边栏收起宽度一致
      （ui-sidebar rail：36x36 控件居中 + 10px 侧边距）。 */
-  div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > nav {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > nav {
     width: 56px;
     padding: 22px 10px 0;
   }
   /* 收起态标题：视觉隐藏但保留在无障碍树（dialog aria-labelledby 指向
-     它，display:none 会丢无障碍名）。 */
-  div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > nav > div:first-child {
+     它，display:none 会丢无障碍名）。DSH 0.2.x 将 navTitle 移至 dialog 直接子级，
+     匹配 > div:first-child 以免误裁 <nav> 内的导航页签列表。 */
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > div:first-child {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -100,7 +101,7 @@ const SETTINGS_CSS = `
     white-space: nowrap;
   }
   /* 收起态按钮：36x36 圆钮（与主界面 rail 控件同形），只留图标居中。 */
-  div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > nav > div > button {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > nav > div > button {
     width: 36px;
     height: 36px;
     padding: 0;
@@ -109,17 +110,17 @@ const SETTINGS_CSS = `
     border-radius: 50%;
   }
   /* 收起态标签：宽度与透明度同时归零（展开时按 transition 反向动画）。 */
-  div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > nav > div > button > span {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}="collapsed"] > nav > div > button > span {
     flex: 0;
     max-width: 0;
     opacity: 0;
   }
   /* 展开态：恢复官方 188px 完整边栏 + 图标文字。 */
-  div[role="dialog"][${SETTINGS_ATTR}="expanded"] > nav {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}="expanded"] > nav {
     width: 188px;
     padding: 22px 12px 0;
   }
-  div[role="dialog"][${SETTINGS_ATTR}="expanded"] > nav > div > button > span {
+  html:not([data-windows-titlebar]):not([data-platform="darwin"]) div[role="dialog"][${SETTINGS_ATTR}="expanded"] > nav > div > button > span {
     flex: 1;
     max-width: 200px;
     opacity: 1;
@@ -132,6 +133,18 @@ let narrowQuery: MediaQueryList | null = null
 /** 当前设置面板元素（null = 未打开）。 */
 let panel: HTMLElement | null = null
 
+/** 是否启用移动端设置弹窗改造（仅窄屏粗指针且非 Windows/macOS 标题栏桌面端）。 */
+function shouldUseSettingsMobile(): boolean {
+  if (narrowQuery?.matches !== true) return false
+  const coarse = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(pointer: coarse)').matches
+    : false
+  const root = document.documentElement
+  return coarse
+    && !root.hasAttribute('data-windows-titlebar')
+    && root.getAttribute('data-platform') !== 'darwin'
+}
+
 /**
  * 定位设置面板：官方 SettingsRoot 的 dialog 独有结构——`role="dialog"`
  * 的直接子级是 nav（Modal 系 dialog 直接子级是 content/footer，不命中）。
@@ -141,13 +154,14 @@ function findSettingsPanel(): HTMLElement | null {
   return nav !== null ? (nav.parentElement ?? null) : null
 }
 
-/** 按当前屏宽把面板状态机复位（宽屏 = 移除属性，官方原样）。 */
+/** 按当前屏宽与平台把面板状态机复位（桌面/宽屏 = 移除属性，官方原样）。 */
 function applyMode(): void {
   if (panel === null) return
-  if (narrowQuery?.matches === true) {
+  if (shouldUseSettingsMobile()) {
     panel.setAttribute(SETTINGS_ATTR, 'collapsed')
   } else {
     panel.removeAttribute(SETTINGS_ATTR)
+    panel.removeAttribute(NOANIM_ATTR)
   }
 }
 
@@ -168,7 +182,7 @@ function isInteractive(target: Element): boolean {
  */
 function onSettingsClickCapture(event: MouseEvent): void {
   const el = panel
-  if (el === null || narrowQuery?.matches !== true) return
+  if (el === null || !shouldUseSettingsMobile()) return
   const state = el.getAttribute(SETTINGS_ATTR)
   if (state !== 'collapsed' && state !== 'expanded') return
   const target = event.target
@@ -199,7 +213,7 @@ const panelObserver = new MutationObserver(() => {
   if (next === panel) return
   const fresh = panel === null && next !== null
   panel = next
-  if (fresh && narrowQuery?.matches === true) {
+  if (fresh && shouldUseSettingsMobile()) {
     // 初始落位：直接钉到收起态并压制首帧动画（见 NOANIM_ATTR CSS）。
     // 下一帧摘除标记，之后的收起/展开照常播动画。
     next.setAttribute(SETTINGS_ATTR, 'collapsed')
@@ -223,7 +237,12 @@ const panelObserver = new MutationObserver(() => {
  *  - marker 变化是切页完成的确定性落点，不依赖切页耗时与定时器猜时机。
  */
 const tabObserver = new MutationObserver((records) => {
-  if (panel === null || narrowQuery?.matches !== true) return
+  if (panel === null) return
+  if (!shouldUseSettingsMobile()) {
+    panel.removeAttribute(SETTINGS_ATTR)
+    panel.removeAttribute(NOANIM_ATTR)
+    return
+  }
   if (panel.getAttribute(SETTINGS_ATTR) !== 'expanded') return
   const nav = panel.querySelector(':scope > nav')
   if (nav === null) return

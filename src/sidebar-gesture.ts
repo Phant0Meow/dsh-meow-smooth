@@ -61,6 +61,8 @@ export interface GestureDeps {
   isFurled(): boolean
   /** 触屏（粗指针）判定（同 client.ts isCoarsePointer）。 */
   isCoarsePointer(): boolean
+  /** 是否允许启用移动端 furl 收起（排除 Windows 标题栏桌面窗口）。 */
+  shouldUseSidebarFurl?(): boolean
 }
 
 /** 手势模块对外接口（client.ts 消费）。 */
@@ -173,6 +175,7 @@ export function installSidebarGesture(deps: GestureDeps): GestureApi {
    *  不经过中间档停顿——宽档收起时切收起与 furl 同步执行，!important
    *  归零让 grid 过渡一次性播 280→0，rail 不会在 56px 处闪现）。 */
   const collapseToZero = (): boolean => {
+    if (deps.shouldUseSidebarFurl?.() === false) return false
     const frame = frameOf()
     if (frame === null || frame.getBoundingClientRect().width >= 1024) return false
     if (collapsedNow()) {
