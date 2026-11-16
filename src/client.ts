@@ -491,7 +491,7 @@ html, body { touch-action: manipulation; }
    0——computeColumns 在视口 <996px 时 details 必然解出 0，写死安全。
    滑动动画复用本体 .frame 自带的 grid-template-columns 过渡（slow）。 */
 @media (max-width: 1023px) {
-  html[${FURL_ROOT_ATTR}] [data-slot="root"] > [data-sidebar-collapsed] {
+  html[${FURL_ROOT_ATTR}]:not([data-windows-titlebar]) [data-slot="root"] > [data-sidebar-collapsed] {
     grid-template-columns: 0px minmax(0, 1fr) 0px !important;
   }
 }
@@ -500,7 +500,7 @@ html, body { touch-action: manipulation; }
    center/details 列前移进第一轨。border 同步透明防残留 1px 竖线；
    visibility 挂延迟 transition（离散过渡：到延时终点才翻转），收拢的
    滑动画播完再隐，观感是整条向左滑出屏幕。 */
-html[${FURL_ROOT_ATTR}] [data-slot="root"] > [data-sidebar-collapsed] > :first-child {
+html[${FURL_ROOT_ATTR}]:not([data-windows-titlebar]) [data-slot="root"] > [data-sidebar-collapsed] > :first-child {
   visibility: hidden;
   border-right-color: transparent;
   transition: visibility 0s var(--ds-transition-duration-slow, 300ms);
@@ -511,7 +511,7 @@ html[${FURL_ROOT_ATTR}] [data-slot="root"] > [data-sidebar-collapsed] > :first-c
  * （左右不对称、furl 后计算值被污染，实测 20/28 不可靠）。margin 挂
  * 过渡，展开/折叠时标题平滑让位/回归。 */
 @media (max-width: 1023px) {
-  html[${FURL_ROOT_ATTR}] [data-slot="conversation.session.header"] > header {
+  html[${FURL_ROOT_ATTR}]:not([data-windows-titlebar]) [data-slot="conversation.session.header"] > header {
     margin-left: 56px;
     transition: margin-left 200ms var(--ds-ease-in-out, ease);
   }
@@ -556,7 +556,7 @@ html[${FURL_ROOT_ATTR}] [data-slot="root"] > [data-sidebar-collapsed] > :first-c
 }
 [${FAB_ATTR}]:active svg { transform: scale(0.9); transition: transform 120ms ease; }
 @media (max-width: 1023px) {
-  html[${FURL_ROOT_ATTR}] [${FAB_ATTR}] { display: flex; }
+  html[${FURL_ROOT_ATTR}]:not([data-windows-titlebar]) [${FAB_ATTR}] { display: flex; }
 }
 /* 弹层避让：设置页/命令面板等 dialog、提醒卡片、IME 悬浮条出现时小方块
    暂时退场——它们都盖住左上角，留着只会误触（点"小方块"实际点到的是
@@ -614,7 +614,7 @@ html[${IME_ROOT_ATTR}] [${FAB_ATTR}] {
   }
   /* furl 态（功能⑱）第一轨已归 0，列起点 56px 免加。选择器含 html 标记，
      特异性高于上一条，furl 时自然覆盖。 */
-  html[data-meow-smooth-furled]:has([data-sidebar-right-panel="fullscreen"][data-sidebar-right-open]) [data-slot="root"] [class*="_centerCol"] {
+  html[data-meow-smooth-furled]:not([data-windows-titlebar]):has([data-sidebar-right-panel="fullscreen"][data-sidebar-right-open]) [data-slot="root"] [class*="_centerCol"] {
     padding-right: calc(100% - 50vw);
   }
   /* 面板本体：全屏覆盖改为钉右半屏。官方全屏态 = position:fixed; inset:0
@@ -1536,6 +1536,7 @@ function frameElement(): HTMLElement | null {
 
 /** 会话切换后：窄屏 + 侧边栏展开 → 收起。 */
 function maybeCollapseSidebar(layout: ILayout): void {
+  if (!shouldUseSidebarFurl()) return
   const frame = frameElement()
   if (frame === null) return
   // 窄屏判定与 AppFrame 一致（frame 宽，非 window）：窄屏 toggle 才 flip
@@ -1556,6 +1557,11 @@ function maybeCollapseSidebar(layout: ILayout): void {
 /** layout 服务是否就绪，apply 里检查后置 true：展开依赖
  *  ctx.layout.toggleSidebar，服务缺失时绝不折叠，否则用户没有入口。 */
 let layoutReady = false
+
+/** Windows 标题栏桌面客户端（data-windows-titlebar）不启用 furl 小方块，保留左上角原生 toggle 按钮。 */
+function shouldUseSidebarFurl(): boolean {
+  return isCoarsePointer() && !document.documentElement.hasAttribute('data-windows-titlebar')
+}
 
 /** furl 标记读写。 */
 function furlRoot(): boolean {
@@ -1599,7 +1605,7 @@ function populateFabIcon(): void {
   if (fab.childElementCount > 0 || fab.dataset.meowFabIconFail === '1') return
   const toggle = railToggleButton()
   if (toggle === null) return
-  const mark = toggle.querySelector('span svg')
+  const mark = toggle.querySelector('span svg, svg')
   if (mark === null) {
     fab.dataset.meowFabIconFail = '1'
     return
@@ -1662,7 +1668,7 @@ function syncSidebarFurl(): void {
   // 解除 furl 让 rail 本体跟手，此刻 tick 若再折回会毁掉拖拽状态。
   if (gestureApi?.busy() === true) return
   if (!layoutReady) return
-  if (!isCoarsePointer()) {
+  if (!shouldUseSidebarFurl()) {
     if (furlRoot()) setFurled(false)
     return
   }
@@ -1689,6 +1695,7 @@ function syncSidebarFurl(): void {
  *  data-slot wrapper 是 display:contents（rect 全 0），所以用 DOM 包含
  *  判定为主、侧边栏渲染列（wrapper 子元素）rect 兜底。 */
 function onClickDismissSidebar(event: MouseEvent, layout: ILayout): void {
+  if (!shouldUseSidebarFurl()) return
   const dbg = (msg: string): void => { if (window.location.search.includes('meow-debug')) console.log(`[meow-smooth] dismiss: ${msg}`) }
   const frame = frameElement()
   if (frame === null) { dbg('no frame'); return }
@@ -2664,6 +2671,7 @@ export function apply(ctx: any): void {
     setFurled,
     isFurled: furlRoot,
     isCoarsePointer,
+    shouldUseSidebarFurl,
   })
   // 手势模块平时自管双实例（新装先拆旧）；这里补登记兜"本实例整体拆除"
   // 场景（如热替换后服务缺失半途退出）：连手势监听一起清干净。
@@ -2676,14 +2684,17 @@ export function apply(ctx: any): void {
   if (isCoarsePointer()) {
     disposers.push(installBackGuard({ gesture: () => gestureApi }))
   }
-  const onFabClick = (): void => {
-    setFurled(false)
-    layout.toggleSidebar()
+  if (shouldUseSidebarFurl()) {
+    const fab = sidebarFab()
+    const onFabClick = (): void => {
+      setFurled(false)
+      layout.toggleSidebar()
+    }
+    fab.addEventListener('click', onFabClick)
+    // FAB 元素跨实例复用（querySelector 命中即返回）——不拆旧监听的话，一次
+    // 点按会触发 N 个实例的 handler——连点 N 次 toggle 就是开了又关。
+    disposers.push(() => { fab.removeEventListener('click', onFabClick) })
   }
-  sidebarFab().addEventListener('click', onFabClick)
-  // FAB 元素跨实例复用（querySelector 命中即返回）——不拆旧监听的话，一次
-  // 点按会触发 N 个实例的 handler——连点 N 次 toggle 就是开了又关。
-  disposers.push(() => { sidebarFab().removeEventListener('click', onFabClick) })
   syncSidebarFurl()
   const sessions = ctx?.sessions as { open?: (sessionId: string) => void; refresh?: () => Promise<void> } | undefined
   // 手机端：侧边栏展开时点击右侧空间 → 自动收起（click 而非 pointerdown，
